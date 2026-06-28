@@ -17,7 +17,7 @@ from typing import Any
 
 from cards import build_serenity_card
 from db_utils import connect_sqlite, retry_on_locked
-from feishu import send_card
+from feishu import send_card, send_text
 from link_enrichment import enrich_post_links
 from llm_analysis import llm_config
 from x_check import configured_x_username, load_env, post_text, refresh_oauth2_token, request_with_available_tokens
@@ -28,8 +28,10 @@ ENV_PATH = ROOT / ".env"
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "surveil.sqlite3"
 API_BASE = "https://api.x.com/2"
-REST_BACKFILL_INTERVAL_SECONDS = int(os.getenv("X_REST_BACKFILL_INTERVAL_SECONDS", "60"))
 MEDIA_FIELDS = "media_key,type,url,preview_image_url,width,height,variants"
+MAX_DELIVERY_ATTEMPTS = 5
+DEFAULT_ALERT_THRESHOLD = 3
+DEFAULT_ALERT_COOLDOWN_SECONDS = 1800
 
 
 def bearer_token() -> str:
@@ -50,12 +52,249 @@ def connect_db() -> sqlite3.Connection:
             text TEXT NOT NULL,
             published_at TEXT,
             first_seen_at TEXT NOT NULL,
+            delivery_status TEXT NOT NULL DEFAULT 'pending',
+            delivered_at TEXT,
+            delivery_error TEXT,
+            delivery_attempts INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (source, post_id)
         )
         """
     )
+    ensure_seen_posts_delivery_columns(conn)
+    ensure_x_stream_health_table(conn)
     conn.commit()
     return conn
+
+
+def ensure_seen_posts_delivery_columns(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(seen_posts)")}
+    if "delivery_status" not in columns:
+        # Existing rows were produced before delivery tracking existed; avoid replaying old posts.
+        conn.execute("ALTER TABLE seen_posts ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'sent'")
+    if "delivered_at" not in columns:
+        conn.execute("ALTER TABLE seen_posts ADD COLUMN delivered_at TEXT")
+    if "delivery_error" not in columns:
+        conn.execute("ALTER TABLE seen_posts ADD COLUMN delivery_error TEXT")
+    if "delivery_attempts" not in columns:
+        conn.execute("ALTER TABLE seen_posts ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0")
+
+
+def ensure_x_stream_health_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS x_stream_health (
+            issue_key TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            first_failed_at TEXT,
+            last_failed_at TEXT,
+            last_error TEXT,
+            last_alerted_at TEXT,
+            last_recovered_at TEXT
+        )
+        """
+    )
+
+
+def rest_backfill_interval_seconds() -> int:
+    raw = os.getenv("X_REST_BACKFILL_INTERVAL_SECONDS", "60").strip()
+    try:
+        return max(10, int(raw))
+    except ValueError:
+        print(f"X_REST_BACKFILL_INTERVAL_SECONDS 无效：{raw!r}，使用 60 秒。", flush=True)
+        return 60
+
+
+def alert_threshold() -> int:
+    raw = os.getenv("X_STREAM_ALERT_THRESHOLD", "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_ALERT_THRESHOLD
+    except ValueError:
+        return DEFAULT_ALERT_THRESHOLD
+
+
+def alert_cooldown_seconds() -> int:
+    raw = os.getenv("X_STREAM_ALERT_COOLDOWN_SECONDS", "").strip()
+    try:
+        return max(60, int(raw)) if raw else DEFAULT_ALERT_COOLDOWN_SECONDS
+    except ValueError:
+        return DEFAULT_ALERT_COOLDOWN_SECONDS
+
+
+def alerts_enabled() -> bool:
+    return os.getenv("X_STREAM_ALERT_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def classify_stream_error(error_text: str, *, status_code: int | None = None, phase: str = "stream") -> tuple[str, str, bool]:
+    text = error_text.lower()
+    if status_code == 429 or "toomanyconnections" in text or "maximum allowed connection limit" in text:
+        return "too_many_connections", "X API stream 连接数超限", True
+    if status_code in {401, 403} or "http 401" in text or "http 403" in text:
+        return "auth", "X API 鉴权异常", True
+    if "connection refused" in text or "errno 61" in text or "errno 111" in text:
+        return "proxy_refused", "X 代理连接被拒绝", False
+    if "network is unreachable" in text or "errno 101" in text:
+        return "network_unreachable", "X 网络不可达", False
+    if "timed out" in text or "timeout" in text:
+        return "timeout", "X API 请求超时", False
+    if status_code in {500, 502, 503, 504} or "http 503" in text or "service unavailable" in text:
+        return "x_api_unavailable", "X API 服务异常", False
+    if "connection reset" in text:
+        return "connection_reset", "X stream 连接被重置", False
+    return f"{phase}_error", "X stream 异常", False
+
+
+def notify_health_alert(issue_title: str, lines: list[str]) -> None:
+    if not alerts_enabled():
+        return
+    try:
+        sent = send_text(issue_title, lines)
+        if not sent:
+            print(f"X stream 告警未发送：FEISHU_WEBHOOK 未配置。{issue_title}", flush=True)
+    except Exception as exc:
+        print(f"X stream 告警发送失败：{exc}", flush=True)
+
+
+def record_stream_failure(error_text: str, *, status_code: int | None = None, phase: str = "stream") -> None:
+    issue_key, issue_name, immediate = classify_stream_error(error_text, status_code=status_code, phase=phase)
+    now = utc_now_iso()
+
+    def operation() -> tuple[int, str, str]:
+        with connect_db() as conn:
+            row = conn.execute(
+                """
+                SELECT status, failure_count, first_failed_at, last_alerted_at
+                FROM x_stream_health
+                WHERE issue_key = ?
+                """,
+                (issue_key,),
+            ).fetchone()
+            if row:
+                status, previous_count, first_failed_at, last_alerted_at = row
+                failure_count = int(previous_count or 0) + 1
+                first_failed_at = first_failed_at or now
+                conn.execute(
+                    """
+                    UPDATE x_stream_health
+                    SET status = 'failing',
+                        failure_count = ?,
+                        first_failed_at = ?,
+                        last_failed_at = ?,
+                        last_error = ?
+                    WHERE issue_key = ?
+                    """,
+                    (failure_count, first_failed_at, now, error_text[:1000], issue_key),
+                )
+            else:
+                failure_count = 1
+                first_failed_at = now
+                last_alerted_at = None
+                conn.execute(
+                    """
+                    INSERT INTO x_stream_health (
+                        issue_key, status, failure_count, first_failed_at, last_failed_at, last_error
+                    ) VALUES (?, 'failing', ?, ?, ?, ?)
+                    """,
+                    (issue_key, failure_count, now, now, error_text[:1000]),
+                )
+            conn.commit()
+            return failure_count, first_failed_at, str(last_alerted_at or "")
+
+    failure_count, first_failed_at, last_alerted_at = retry_on_locked(operation)
+    threshold_reached = failure_count >= alert_threshold()
+    cooldown_ok = True
+    if last_alerted_at:
+        try:
+            elapsed = datetime.fromisoformat(now).timestamp() - datetime.fromisoformat(last_alerted_at).timestamp()
+            cooldown_ok = elapsed >= alert_cooldown_seconds()
+        except ValueError:
+            cooldown_ok = True
+    if not (immediate or threshold_reached) or not cooldown_ok:
+        return
+
+    notify_health_alert(
+        f"Surveil 告警：{issue_name}",
+        [
+            f"模块：X/Serenity stream",
+            f"阶段：{phase}",
+            f"连续次数：{failure_count}",
+            f"首次失败：{first_failed_at}",
+            f"最近失败：{now}",
+            f"错误摘要：{error_text[:500]}",
+            "系统会继续自动重试；恢复后会发送恢复通知。",
+        ],
+    )
+
+    def mark_alerted() -> None:
+        with connect_db() as conn:
+            conn.execute(
+                "UPDATE x_stream_health SET last_alerted_at = ? WHERE issue_key = ?",
+                (now, issue_key),
+            )
+            conn.commit()
+
+    retry_on_locked(mark_alerted)
+
+
+def record_stream_recovery(phase: str = "stream") -> None:
+    now = utc_now_iso()
+
+    def operation() -> list[tuple[str, int, str, str]]:
+        with connect_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT issue_key, failure_count, first_failed_at, last_error
+                FROM x_stream_health
+                WHERE status = 'failing'
+                  AND last_alerted_at IS NOT NULL
+                """
+            ).fetchall()
+            conn.execute(
+                """
+                UPDATE x_stream_health
+                SET status = 'ok',
+                    failure_count = 0,
+                    last_recovered_at = ?
+                WHERE status = 'failing'
+                """,
+                (now,),
+            )
+            conn.commit()
+        return [(str(key), int(count or 0), str(first or ""), str(error or "")) for key, count, first, error in rows]
+
+    recovered = retry_on_locked(operation)
+    if not recovered:
+        return
+    names = {
+        "too_many_connections": "X API stream 连接数超限",
+        "auth": "X API 鉴权异常",
+        "proxy_refused": "X 代理连接被拒绝",
+        "network_unreachable": "X 网络不可达",
+        "timeout": "X API 请求超时",
+        "x_api_unavailable": "X API 服务异常",
+        "connection_reset": "X stream 连接被重置",
+        "rule_error": "X stream rule 异常",
+        "stream_error": "X stream 异常",
+        "startup_error": "X API 启动校验异常",
+        "rest_backfill_error": "X REST 补漏异常",
+    }
+    issue_lines = [
+        f"- {names.get(key, key)}：失败 {count} 次，首次 {first or 'unknown'}"
+        for key, count, first, _ in recovered
+    ]
+    notify_health_alert(
+        "Surveil 恢复：X/Serenity stream 已恢复",
+        [
+            f"模块：X/Serenity stream",
+            f"恢复阶段：{phase}",
+            f"恢复时间：{now}",
+            *issue_lines,
+        ],
+    )
 
 
 def x_request(method: str, path: str, token: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -126,8 +365,8 @@ def save_post(conn: sqlite3.Connection, username: str, post: dict[str, Any]) -> 
         conn.execute(
             """
             INSERT INTO seen_posts (
-                source, post_id, url, text, published_at, first_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                source, post_id, url, text, published_at, first_seen_at, delivery_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"x:{username}",
@@ -136,6 +375,7 @@ def save_post(conn: sqlite3.Connection, username: str, post: dict[str, Any]) -> 
                 text,
                 post.get("created_at"),
                 now,
+                "pending",
             ),
         )
     except sqlite3.IntegrityError:
@@ -144,6 +384,63 @@ def save_post(conn: sqlite3.Connection, username: str, post: dict[str, Any]) -> 
     post["url"] = url
     post["full_text"] = text
     return True
+
+
+def mark_post_delivery(username: str, post_id: str, status: str, error: str = "") -> None:
+    source = f"x:{username}"
+    delivered_at = datetime.now(timezone.utc).isoformat() if status == "sent" else None
+
+    def operation() -> None:
+        with connect_db() as conn:
+            conn.execute(
+                """
+                UPDATE seen_posts
+                SET delivery_status = ?,
+                    delivered_at = COALESCE(?, delivered_at),
+                    delivery_error = ?,
+                    delivery_attempts = delivery_attempts + 1
+                WHERE source = ? AND post_id = ?
+                """,
+                (status, delivered_at, error[:1000], source, str(post_id)),
+            )
+            conn.commit()
+
+    retry_on_locked(operation)
+
+
+def load_pending_deliveries(username: str, limit: int = 10) -> list[dict[str, Any]]:
+    source = f"x:{username}"
+
+    def operation() -> list[dict[str, Any]]:
+        with connect_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT post_id, url, text, published_at
+                FROM seen_posts
+                WHERE source = ?
+                  AND delivery_status IN ('pending', 'failed')
+                  AND delivery_attempts < ?
+                ORDER BY first_seen_at ASC
+                LIMIT ?
+                """,
+                (source, MAX_DELIVERY_ATTEMPTS, limit),
+            ).fetchall()
+        posts = []
+        for post_id, url, text, published_at in rows:
+            posts.append(
+                {
+                    "id": str(post_id),
+                    "url": url,
+                    "text": text,
+                    "full_text": text,
+                    "created_at": published_at,
+                    "_media": [],
+                    "_links": [],
+                }
+            )
+        return posts
+
+    return retry_on_locked(operation)
 
 
 def save_post_with_retry(username: str, post: dict[str, Any]) -> bool:
@@ -319,7 +616,7 @@ def attach_linked_status_media(post: dict[str, Any]) -> None:
     attach_linked_status_context(post)
 
 
-def notify_post(post: dict[str, Any]) -> None:
+def notify_post(post: dict[str, Any]) -> bool:
     attach_linked_status_context(post)
     try:
         links = enrich_post_links(post)
@@ -329,7 +626,36 @@ def notify_post(post: dict[str, Any]) -> None:
         print(f"X 外链抓取失败：{exc}", flush=True)
         post["_links"] = []
     merge_linked_status_links(post)
-    send_card(build_serenity_card(post))
+    return send_card(build_serenity_card(post))
+
+
+def deliver_post(username: str, post: dict[str, Any]) -> bool:
+    post_id = str(post["id"])
+    try:
+        sent = notify_post(post)
+    except Exception as exc:
+        error = str(exc)
+        print(f"X 新帖飞书发送失败：{post.get('url') or post_id} {error}", flush=True)
+        mark_post_delivery(username, post_id, "failed", error)
+        return False
+    if sent:
+        mark_post_delivery(username, post_id, "sent")
+        return True
+    print(f"X 新帖飞书发送跳过：FEISHU_WEBHOOK 未配置 {post.get('url') or post_id}", flush=True)
+    mark_post_delivery(username, post_id, "skipped", "FEISHU_WEBHOOK 未配置")
+    return False
+
+
+def retry_pending_deliveries(username: str) -> int:
+    posts = load_pending_deliveries(username)
+    if not posts:
+        return 0
+    sent_count = 0
+    for post in posts:
+        print(f"重试 X 新帖飞书发送：{post.get('url')}", flush=True)
+        if deliver_post(username, post):
+            sent_count += 1
+    return sent_count
 
 
 def stream_url() -> str:
@@ -386,14 +712,16 @@ def backfill_recent_posts(username: str) -> int:
     try:
         posts = fetch_recent_posts(username, max_results=10)
     except Exception as exc:
-        print(f"X REST 补漏失败：{exc}", flush=True)
+        error_text = str(exc)
+        print(f"X REST 补漏失败：{error_text}", flush=True)
+        record_stream_failure(error_text, phase="rest_backfill")
         return 0
     count = 0
     for post in sorted(posts, key=lambda item: item.get("created_at", "")):
         if save_post_with_retry(username, post):
             count += 1
             print(f"REST 补漏发现 X 新帖：{post['url']}", flush=True)
-            notify_post(post)
+            deliver_post(username, post)
     if count == 0:
         print("X REST 补漏：没有发现新帖。", flush=True)
     return count
@@ -413,6 +741,7 @@ def stream_forever(username: str) -> None:
     url = stream_url()
     backoff = 5
     last_backfill_at = 0.0
+    backfill_interval = rest_backfill_interval_seconds()
     while True:
         token = bearer_token()
         try:
@@ -420,6 +749,7 @@ def stream_forever(username: str) -> None:
         except Exception as exc:
             error_text = str(exc)
             print(f"X stream rule 检查失败：{error_text}", flush=True)
+            record_stream_failure(error_text, phase="rule")
             if maybe_refresh_stream_token(error_text):
                 backoff = 5
             print(f"{backoff} 秒后重试 X stream rule。", flush=True)
@@ -438,11 +768,13 @@ def stream_forever(username: str) -> None:
         print("连接 X Filtered Stream...", flush=True)
         try:
             now = time.monotonic()
-            if now - last_backfill_at >= REST_BACKFILL_INTERVAL_SECONDS:
+            if now - last_backfill_at >= backfill_interval:
+                retry_pending_deliveries(username)
                 backfill_recent_posts(username)
                 last_backfill_at = now
             with urllib.request.urlopen(request, timeout=None) as response:
                 print("X Filtered Stream 已连接。", flush=True)
+                record_stream_recovery(phase="stream_connected")
                 backoff = 5
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").strip()
@@ -456,19 +788,23 @@ def stream_forever(username: str) -> None:
                     attach_media(post, payload)
                     if save_post_with_retry(username, post):
                         print(f"发现 X 新帖：{post['url']}", flush=True)
-                        notify_post(post)
+                        deliver_post(username, post)
                     else:
                         print(f"忽略已见过的帖子：{post.get('id')}", flush=True)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            error_text = f"HTTP {exc.code}: {body}"
             print(f"X stream HTTP {exc.code}: {body}", flush=True)
+            record_stream_failure(error_text, status_code=exc.code, phase="stream")
             if exc.code == 429:
                 backoff = max(backoff, 300)
             elif exc.code == 401 and refresh_oauth2_token():
                 print("X stream token 已刷新，下次重连使用新 X_ACCESS_TOKEN。", flush=True)
                 backoff = 5
         except Exception as exc:
-            print(f"X stream 连接失败：{exc}", flush=True)
+            error_text = str(exc)
+            print(f"X stream 连接失败：{error_text}", flush=True)
+            record_stream_failure(error_text, phase="stream")
 
         print(f"{backoff} 秒后重连 X stream。", flush=True)
         time.sleep(backoff)
@@ -489,11 +825,16 @@ def main() -> int:
     while True:
         try:
             request_with_available_tokens(f"/users/by/username/{username}", {"user.fields": "id,name,username"})
+            record_stream_recovery(phase="startup_check")
             break
         except SystemExit as exc:
-            print(f"X API 启动校验失败：{exc}", flush=True)
+            error_text = str(exc)
+            print(f"X API 启动校验失败：{error_text}", flush=True)
+            record_stream_failure(error_text, phase="startup")
         except Exception as exc:
-            print(f"X API 启动校验失败：{exc}", flush=True)
+            error_text = str(exc)
+            print(f"X API 启动校验失败：{error_text}", flush=True)
+            record_stream_failure(error_text, phase="startup")
         print(f"{startup_backoff} 秒后重试 X API 启动校验。", flush=True)
         time.sleep(startup_backoff)
         startup_backoff = min(startup_backoff * 2, 300)

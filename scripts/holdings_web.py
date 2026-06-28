@@ -93,6 +93,10 @@ def table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
 def normalize_time(value: str) -> str:
     return str(value or "")
 
@@ -238,9 +242,12 @@ def fetch_events_rows(day: str = "", source: str = "", kind: str = "", q: str = 
                     }
                 )
         if table_exists(conn, "seen_posts"):
+            seen_columns = table_columns(conn, "seen_posts")
+            delivery_expr = "delivery_status" if "delivery_status" in seen_columns else "'sent'"
             for row in conn.execute(
-                """
-                SELECT source, post_id, url, text, published_at, first_seen_at
+                f"""
+                SELECT source, post_id, url, text, published_at, first_seen_at,
+                       {delivery_expr} AS delivery_status
                 FROM seen_posts
                 WHERE first_seen_at >= ? AND first_seen_at < ?
                 ORDER BY first_seen_at DESC
@@ -261,8 +268,8 @@ def fetch_events_rows(day: str = "", source: str = "", kind: str = "", q: str = 
                         "seen_at": normalize_time(row["first_seen_at"]),
                         "importance": "",
                         "classification": "",
-                        "push": True,
-                        "delivery_status": "sent",
+                        "push": row["delivery_status"] == "sent",
+                        "delivery_status": row["delivery_status"] or "",
                         "baseline_only": False,
                     }
                 )

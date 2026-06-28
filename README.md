@@ -1,12 +1,12 @@
-# Surveil
+# MarketPulseWire
 
-Surveil is an event-driven market and industry monitoring system for personal research. It watches holdings, watchlists, official company/news sources, filings/notices, RSS feeds, X accounts, and selected industry media; then uses an OpenAI-compatible LLM to gate importance, produce structured summaries, and deliver alerts to Feishu or a local Web workbench.
+MarketPulseWire is an event-driven market and industry monitoring system for personal research. It watches holdings, watchlists, official company/news sources, filings/notices, RSS feeds, X accounts, and selected industry media; then uses an OpenAI-compatible LLM to gate importance, produce structured summaries, and deliver alerts to Feishu or a local Web workbench.
 
-Surveil is not an investment adviser and does not generate buy/sell recommendations.
+MarketPulseWire is not an investment adviser and does not generate buy/sell recommendations.
 
 ## Why This Exists
 
-Market-moving semiconductor and AI infrastructure signals are scattered across X, sell-side-style research headlines, official company blogs, regional supply-chain media, company notices, and paid/authorized data services. Surveil turns that messy stream into a self-hosted research radar:
+Market-moving semiconductor and AI infrastructure signals are scattered across X, sell-side-style research headlines, official company blogs, regional supply-chain media, company notices, and paid/authorized data services. MarketPulseWire turns that messy stream into a self-hosted research radar:
 
 - Track your own holdings and adjacent supply-chain names.
 - Watch high-signal sources such as Serenity on X, TrendForce, DIGITIMES, Nikkei xTECH, The Elec, OpenAI, NVIDIA, Samsung, SK hynix, Micron, Sina Finance, iFinD, and JYGS.
@@ -28,7 +28,7 @@ Market-moving semiconductor and AI infrastructure signals are scattered across X
 
 ## Built-In Source Radar
 
-Surveil keeps a public, reusable source catalog for semiconductor and AI infrastructure monitoring:
+MarketPulseWire keeps a public, reusable source catalog for semiconductor and AI infrastructure monitoring:
 
 | Source | Why It Matters |
 | --- | --- |
@@ -109,7 +109,7 @@ Legacy `OPENAI_*` and `DASHSCOPE_*` variables are kept as compatibility aliases,
 
 ## Data Sources
 
-Surveil is designed around official or authorized access paths:
+MarketPulseWire is designed around official or authorized access paths:
 
 - Sina Finance OpenAPI or legacy public pages
 - iFinD REST/API access with your account token
@@ -121,7 +121,7 @@ Do not commit raw paid content, cookies, private API responses, logs, generated 
 
 ## Deployment Options
 
-Surveil supports three common deployment paths:
+MarketPulseWire supports three common deployment paths:
 
 - Local development on macOS/Linux
 - Linux server deployment with systemd timers/services
@@ -183,6 +183,17 @@ DEPLOY_PROXY_DIR
 ```
 
 The deploy workflow runs `scripts/deploy_remote.sh` over SSH/rsync. It does not write your business/API secrets; configure those on the server through `.env`, the Web workbench, or the write helper scripts.
+
+## PR Automation
+
+This repository uses GitHub Actions and Dependabot for low-risk PR automation:
+
+- `CI` runs Python compilation, shell syntax checks, lightweight tests, and secret scanning on every PR.
+- `PR Governance` labels PRs as `docs-only`, `dependencies`, `safe-to-merge`, `needs-human-review`, or `security-sensitive`.
+- `Low-risk PR auto-merge` may squash-merge docs-only PRs after CI passes.
+- Dependabot opens weekly PRs for `pip` and GitHub Actions updates.
+
+Core monitoring, alerting, deployment, credentials, database, and LLM behavior changes require maintainer review even when CI passes.
 
 ## Pre-Publish Checks
 

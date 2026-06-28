@@ -1,0 +1,165 @@
+name: PR Governance
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Classify PR risk
+        id: classify
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const names = files.map((file) => file.filename);
+            const actor = context.actor;
+            const isDependabot = actor === "dependabot[bot]";
+
+            const docPatterns = [
+              /^README\.md$/,
+              /^LICENSE$/,
+              /^docs\//,
+              /^\.github\/ISSUE_TEMPLATE\//,
+              /^\.github\/PULL_REQUEST_TEMPLATE\.md$/,
+            ];
+            const highRiskPatterns = [
+              /^scripts\//,
+              /^systemd\//,
+              /^config\//,
+              /^\.github\/workflows\/deploy\.yml$/,
+              /^\.github\/dependabot\.yml$/,
+              /^requirements.*\.txt$/,
+              /^pyproject\.toml$/,
+              /^AGENTS\.md$/,
+            ];
+            const securityPatterns = [
+              /^\.env\.example$/,
+              /^scripts\/scan_secrets\.py$/,
+              /^scripts\/write_remote_/,
+              /^scripts\/deploy_remote\.sh$/,
+              /^scripts\/install_remote_/,
+              /^scripts\/.*proxy/i,
+              /^\.github\/workflows\//,
+            ];
+
+            const docsOnly = names.length > 0 && names.every((name) => docPatterns.some((pattern) => pattern.test(name)));
+            const highRisk = names.some((name) => highRiskPatterns.some((pattern) => pattern.test(name)));
+            const securitySensitive = names.some((name) => securityPatterns.some((pattern) => pattern.test(name)));
+
+            const labels = new Set();
+            if (docsOnly) labels.add("docs-only");
+            if (isDependabot) labels.add("dependencies");
+            if (highRisk || securitySensitive || pr.draft) labels.add("needs-human-review");
+            if (securitySensitive) labels.add("security-sensitive");
+            if ((docsOnly || isDependabot) && !highRisk && !securitySensitive && !pr.draft) labels.add("safe-to-merge");
+
+            const managedLabelDefinitions = {
+              "docs-only": { color: "0e8a16", description: "Documentation-only change" },
+              "dependencies": { color: "0366d6", description: "Dependency update" },
+              "needs-human-review": { color: "d93f0b", description: "Maintainer review required" },
+              "security-sensitive": { color: "b60205", description: "Touches secrets, deployment, or workflow-sensitive files" },
+              "safe-to-merge": { color: "5319e7", description: "Eligible for low-risk auto-merge after CI passes" },
+            };
+            const managedLabels = Object.keys(managedLabelDefinitions);
+            for (const [name, definition] of Object.entries(managedLabelDefinitions)) {
+              await github.rest.issues.createLabel({
+                owner,
+                repo,
+                name,
+                color: definition.color,
+                description: definition.description,
+              }).catch((error) => {
+                if (error.status !== 422) throw error;
+              });
+            }
+            const current = (await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: pr.number,
+              per_page: 100,
+            })).data.map((label) => label.name);
+
+            for (const label of managedLabels) {
+              if (current.includes(label) && !labels.has(label)) {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  name: label,
+                }).catch((error) => {
+                  if (error.status !== 404) throw error;
+                });
+              }
+            }
+            if (labels.size > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pr.number,
+                labels: Array.from(labels),
+              });
+            }
+
+            const riskLines = [];
+            if (docsOnly) riskLines.push("- Classification: docs-only.");
+            if (isDependabot) riskLines.push("- Classification: dependency update.");
+            if (highRisk) riskLines.push("- Review required: code, config, dependency, or deployment-sensitive path changed.");
+            if (securitySensitive) riskLines.push("- Security-sensitive: secrets, deployment, proxy, or workflow-related path changed.");
+            if (labels.has("safe-to-merge")) riskLines.push("- Automation: eligible for auto-merge after CI passes.");
+            if (labels.has("needs-human-review")) riskLines.push("- Automation: auto-merge blocked; maintainer review required.");
+
+            const body = [
+              "<!-- marketpulsewire-pr-governance -->",
+              "### MarketPulseWire PR governance",
+              "",
+              `Changed files: ${names.length}`,
+              "",
+              ...riskLines,
+              "",
+              "CI remains the hard gate. This workflow only labels and summarizes risk; it does not run untrusted PR code.",
+            ].join("\n");
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+            const previous = comments.find((comment) =>
+              comment.user.type === "Bot" && comment.body.includes("<!-- marketpulsewire-pr-governance -->")
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body,
+              });
+            }
+
+            core.setOutput("labels", Array.from(labels).join(","));
