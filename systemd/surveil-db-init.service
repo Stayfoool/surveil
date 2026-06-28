@@ -1,0 +1,14 @@
+[Unit]
+Description=Surveil database initialization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/market_db.py
+
+[Install]
+WantedBy=multi-user.target

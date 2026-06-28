@@ -1,0 +1,18 @@
+[Unit]
+Description=Surveil Sina Finance flash monitor
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python -u /opt/surveil/scripts/sina_flash.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/surveil/logs/sina-flash.log
+StandardError=append:/opt/surveil/logs/sina-flash.err.log
+
+[Install]
+WantedBy=multi-user.target

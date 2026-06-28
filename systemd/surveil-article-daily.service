@@ -1,0 +1,13 @@
+[Unit]
+Description=Surveil article monitor daily digest
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/article_daily.py
+StandardOutput=append:/opt/surveil/logs/article-daily.log
+StandardError=append:/opt/surveil/logs/article-daily.err.log

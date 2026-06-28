@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.surveil.portfolio-monitor</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>__SURVEIL_ROOT__/scripts/portfolio_monitor.py</string>
+    <string>--interval</string>
+    <string>120</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__SURVEIL_ROOT__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__SURVEIL_ROOT__/logs/portfolio_monitor.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__SURVEIL_ROOT__/logs/portfolio_monitor.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+</dict>
+</plist>

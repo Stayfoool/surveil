@@ -1,0 +1,22 @@
+{
+  "holdings": [
+    {
+      "symbol": "000063.SZ",
+      "name": "中兴通讯",
+      "enabled": false
+    },
+    {
+      "symbol": "NVDA",
+      "name": "NVIDIA",
+      "enabled": false
+    },
+    {
+      "symbol": "300308.SZ",
+      "enabled": false
+    },
+    {
+      "name": "工业富联",
+      "enabled": false
+    }
+  ]
+}

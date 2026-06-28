@@ -1,0 +1,19 @@
+[Unit]
+Description=Surveil X/Serenity filtered stream
+After=network-online.target surveil-db-init.service surveil-proxy.service
+Wants=network-online.target surveil-proxy.service
+
+[Service]
+Type=simple
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+EnvironmentFile=-/opt/surveil/proxy.env
+ExecStart=/opt/surveil/.venv/bin/python -u /opt/surveil/scripts/x_stream.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/surveil/logs/x-stream.log
+StandardError=append:/opt/surveil/logs/x-stream.err.log
+
+[Install]
+WantedBy=multi-user.target

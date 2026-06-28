@@ -1,0 +1,19 @@
+[Unit]
+Description=Surveil TrendForce official page monitor
+After=network-online.target surveil-db-init.service surveil-proxy.service
+Wants=network-online.target surveil-proxy.service
+
+[Service]
+Type=simple
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+EnvironmentFile=-/opt/surveil/proxy.env
+ExecStart=/opt/surveil/.venv/bin/python -u /opt/surveil/scripts/trendforce_page_monitor.py --interval 900
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/surveil/logs/trendforce-page-monitor.log
+StandardError=append:/opt/surveil/logs/trendforce-page-monitor.err.log
+
+[Install]
+WantedBy=multi-user.target

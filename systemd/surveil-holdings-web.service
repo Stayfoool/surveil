@@ -1,0 +1,18 @@
+[Unit]
+Description=Surveil holdings management web UI
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/holdings_web.py --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/opt/surveil/logs/holdings-web.log
+StandardError=append:/opt/surveil/logs/holdings-web.err.log
+
+[Install]
+WantedBy=multi-user.target

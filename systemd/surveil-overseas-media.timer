@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Surveil overseas semiconductor media batch every 5 minutes
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=surveil-overseas-media.service
+
+[Install]
+WantedBy=timers.target

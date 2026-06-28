@@ -1,0 +1,17 @@
+[Unit]
+Description=Surveil local-only mihomo proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=surveil
+WorkingDirectory=/opt/surveil-proxy
+ExecStart=/usr/local/bin/mihomo -d /opt/surveil-proxy -f /opt/surveil-proxy/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

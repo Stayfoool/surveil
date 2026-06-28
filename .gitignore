@@ -1,0 +1,37 @@
+.env
+.env.*
+!.env.example
+*.bak
+*.bak-*
+*.backup
+
+# User portfolio/config/runtime state
+docs/monitoring-plan.md
+config/portfolio.json
+config/media_keywords.json
+data/
+logs/
+reports/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Proxy/runtime secrets and downloaded binaries
+proxy.env
+subscription.url
+shadowsocks_*.yaml
+*clash*.yaml
+*mihomo*.yaml
+mihomo-*
+*.gz
+
+# Python/local tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS/editor
+.DS_Store

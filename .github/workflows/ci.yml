@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Compile scripts
+        run: python -m py_compile scripts/*.py
+
+      - name: Check shell scripts
+        run: bash -n scripts/*.sh
+
+      - name: Run tests
+        run: |
+          python scripts/test_analysis.py
+          python scripts/test_llm_analysis.py
+          python scripts/test_trendforce_page_monitor.py
+          python scripts/test_link_enrichment.py
+          python scripts/test_sina_stock_news.py
+
+      - name: Secret pattern scan
+        run: python scripts/scan_secrets.py

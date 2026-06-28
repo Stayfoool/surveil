@@ -1,0 +1,206 @@
+# Surveil
+
+Surveil is an event-driven market and industry monitoring system for personal research. It watches holdings, watchlists, official company/news sources, filings/notices, RSS feeds, X accounts, and selected industry media; then uses an OpenAI-compatible LLM to gate importance, produce structured summaries, and deliver alerts to Feishu or a local Web workbench.
+
+Surveil is not an investment adviser and does not generate buy/sell recommendations.
+
+## Why This Exists
+
+Market-moving semiconductor and AI infrastructure signals are scattered across X, sell-side-style research headlines, official company blogs, regional supply-chain media, company notices, and paid/authorized data services. Surveil turns that messy stream into a self-hosted research radar:
+
+- Track your own holdings and adjacent supply-chain names.
+- Watch high-signal sources such as Serenity on X, TrendForce, DIGITIMES, Nikkei xTECH, The Elec, OpenAI, NVIDIA, Samsung, SK hynix, Micron, Sina Finance, iFinD, and JYGS.
+- Use an LLM to decide what deserves immediate attention and what can wait for a daily digest.
+- Keep credentials and personal research data on your own machine or server.
+
+## Features
+
+- Holdings/watchlist management through a local-only Web workbench
+- Sina Finance news adapters for holdings-related news
+- iFinD notice ingestion and PDF text extraction
+- X account monitoring through official API credentials
+- RSS/Atom/RDF monitoring for official company and industry sources
+- DIGITIMES, Nikkei xTECH, The Elec, TrendForce-style media adapters
+- LLM importance gate, freshness checks, and structured research summaries
+- Feishu card delivery
+- Linux systemd deployment and macOS launchd templates
+- GitHub Actions CI and optional SSH deployment workflow
+
+## Built-In Source Radar
+
+Surveil keeps a public, reusable source catalog for semiconductor and AI infrastructure monitoring:
+
+| Source | Why It Matters |
+| --- | --- |
+| Serenity on X | High-signal public market commentary around AI infrastructure, photonics, memory, CPO/optical interconnects, and global semiconductor equities. |
+| TrendForce | Widely followed supply-chain research source for memory, HBM, MLCC, foundry, panels, LEDs, batteries, AI servers, and component pricing. |
+| DIGITIMES | Taiwan-centered supply-chain media with early signals from foundries, IC design, packaging, servers, AI hardware, and electronics manufacturing. |
+| Nikkei xTECH | Japan technology and manufacturing coverage, useful for materials, components, equipment, automotive electronics, and industrial technology shifts. |
+| The Elec | Korea-centered semiconductor/display/battery supply-chain media, useful for Samsung, SK hynix, OLED, memory, equipment, and materials signals. |
+| OpenAI / NVIDIA / Samsung / SK hynix / Micron official feeds | First-party product, architecture, capex, platform, memory, and AI infrastructure announcements. |
+| Sina Finance / iFinD / JYGS | China-market news, company notices, announcements, and A-share event/opportunity tracking. |
+
+See [docs/sources.md](docs/sources.md) for URLs, access methods, and compliance notes.
+
+## Quick Start
+
+```bash
+git clone https://github.com/<you>/<repo>.git
+cd <repo>
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+cp config/portfolio.example.json config/portfolio.json
+cp config/media_keywords.example.json config/media_keywords.json
+python scripts/market_db.py
+```
+
+Start the Web workbench:
+
+```bash
+python scripts/holdings_web.py --host 127.0.0.1 --port 8787
+```
+
+Open:
+
+```text
+http://127.0.0.1:8787
+```
+
+For production, run Surveil on a Linux server with systemd. See [docs/deployment.md](docs/deployment.md).
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill only the sources you use.
+
+The preferred LLM configuration is:
+
+```env
+LLM_PROVIDER=openai_compatible
+LLM_API_KEY=<your_api_key>
+LLM_BASE_URL=https://api.example.com/v1
+LLM_MODEL=your-model-name
+LLM_TIMEOUT_SECONDS=90
+LLM_RETRY_COUNT=2
+```
+
+Examples:
+
+```env
+# DeepSeek OpenAI-compatible
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+```
+
+```env
+# Zhipu GLM Coding Plan / Token Plan
+LLM_BASE_URL=https://api.z.ai/api/coding/paas/v4
+LLM_MODEL=glm-5.2
+```
+
+```env
+# Aliyun compatible mode
+LLM_BASE_URL=https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=glm-5.2
+```
+
+Legacy `OPENAI_*` and `DASHSCOPE_*` variables are kept as compatibility aliases, but new setups should use `LLM_*`.
+
+## Data Sources
+
+Surveil is designed around official or authorized access paths:
+
+- Sina Finance OpenAPI or legacy public pages
+- iFinD REST/API access with your account token
+- X API tokens for the account you monitor
+- Official RSS feeds and public list pages
+- Optional logged-in cookies only for sources where your usage is authorized
+
+Do not commit raw paid content, cookies, private API responses, logs, generated reports, or real portfolios.
+
+## Deployment Options
+
+Surveil supports three common deployment paths:
+
+- Local development on macOS/Linux
+- Linux server deployment with systemd timers/services
+- GitHub Actions SSH deployment to your own server
+
+GitHub Actions should deploy code, not run monitors long term. Runtime credentials should normally stay in the target server's `.env`.
+
+See:
+
+- [Deployment](docs/deployment.md)
+- [Source Catalog](docs/sources.md)
+- [Security](docs/security.md)
+- [Compliance](docs/compliance.md)
+- [Roadmap](docs/roadmap.md)
+
+## Remote Helper Scripts
+
+Set these variables before using remote helper scripts:
+
+```bash
+export REMOTE_HOST=your.server.example.com
+export REMOTE_USER=root
+export REMOTE_SSH_KEY=~/.ssh/id_ed25519
+export REMOTE_DIR=/opt/surveil
+export REMOTE_PROXY_DIR=/opt/surveil-proxy
+export REMOTE_SERVICE_USER=surveil
+```
+
+Deploy and install services:
+
+```bash
+./scripts/deploy_remote.sh
+./scripts/write_remote_secrets.sh
+./scripts/write_remote_feishu.sh
+./scripts/install_remote_systemd.sh
+```
+
+Open the Web workbench through an SSH tunnel:
+
+```bash
+ssh -L 8787:127.0.0.1:8787 -i "$REMOTE_SSH_KEY" -o IdentitiesOnly=yes "$REMOTE_USER@$REMOTE_HOST"
+```
+
+Then open `http://127.0.0.1:8787`.
+
+## GitHub Actions Deployment
+
+The repository includes `.github/workflows/deploy.yml`, triggered manually with `workflow_dispatch`.
+
+Configure these repository secrets:
+
+```text
+DEPLOY_HOST
+DEPLOY_USER
+DEPLOY_SSH_KEY
+DEPLOY_DIR
+DEPLOY_SERVICE_USER
+DEPLOY_PROXY_DIR
+```
+
+The deploy workflow runs `scripts/deploy_remote.sh` over SSH/rsync. It does not write your business/API secrets; configure those on the server through `.env`, the Web workbench, or the write helper scripts.
+
+## Pre-Publish Checks
+
+Before making a fork public:
+
+```bash
+python -m py_compile scripts/*.py
+bash -n scripts/*.sh
+python scripts/test_analysis.py
+python scripts/test_llm_analysis.py
+python scripts/test_trendforce_page_monitor.py
+python scripts/test_link_enrichment.py
+python scripts/test_sina_stock_news.py
+python scripts/scan_secrets.py
+```
+
+The scanner is intentionally lightweight. Also manually inspect the file list before publishing.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

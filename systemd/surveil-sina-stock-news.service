@@ -1,0 +1,13 @@
+[Unit]
+Description=Surveil Sina Finance per-stock news batch
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/sina_stock_news.py --deliver
+StandardOutput=append:/opt/surveil/logs/sina-stock-news.log
+StandardError=append:/opt/surveil/logs/sina-stock-news.err.log

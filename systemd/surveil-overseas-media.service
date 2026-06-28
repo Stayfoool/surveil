@@ -1,0 +1,14 @@
+[Unit]
+Description=Surveil overseas semiconductor media RSS batch
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+EnvironmentFile=-/opt/surveil/proxy.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/overseas_media_monitor.py
+StandardOutput=append:/opt/surveil/logs/overseas-media.log
+StandardError=append:/opt/surveil/logs/overseas-media.err.log

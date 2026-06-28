@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.surveil.official-news-daily</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>__SURVEIL_ROOT__/scripts/official_news_daily.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__SURVEIL_ROOT__</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>20</integer>
+    <key>Minute</key>
+    <integer>40</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__SURVEIL_ROOT__/logs/official_news_daily.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__SURVEIL_ROOT__/logs/official_news_daily.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+</dict>
+</plist>

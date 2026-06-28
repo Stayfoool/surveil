@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Surveil JYGS action analysis at 12:30 and 16:00
+
+[Timer]
+OnCalendar=*-*-* 12:30:00
+OnCalendar=*-*-* 16:00:00
+Persistent=true
+Unit=surveil-jygs-actions.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Surveil article monitor daily digest at 20:50
+
+[Timer]
+OnCalendar=*-*-* 20:50:00
+Persistent=true
+Unit=surveil-article-daily.service
+
+[Install]
+WantedBy=timers.target

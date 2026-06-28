@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Surveil iFinD notice batch at 08:00 and 20:00
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+OnCalendar=*-*-* 20:00:00
+Persistent=true
+Unit=surveil-ifind-notice.service
+
+[Install]
+WantedBy=timers.target

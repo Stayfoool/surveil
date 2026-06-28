@@ -1,0 +1,13 @@
+[Unit]
+Description=Surveil JYGS action analysis batch
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python -u /opt/surveil/scripts/jygs_actions.py --deliver
+StandardOutput=append:/opt/surveil/logs/jygs-actions.log
+StandardError=append:/opt/surveil/logs/jygs-actions.err.log
