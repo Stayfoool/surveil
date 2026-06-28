@@ -111,7 +111,7 @@ Legacy `OPENAI_*` and `DASHSCOPE_*` variables are kept as compatibility aliases,
 
 MarketPulseWire is designed around official or authorized access paths:
 
-- Sina Finance OpenAPI or legacy public pages
+- Sina Finance public pages, with optional paid OpenAPI support
 - iFinD REST/API access with your account token
 - X API tokens for the account you monitor
 - Official RSS feeds and public list pages
