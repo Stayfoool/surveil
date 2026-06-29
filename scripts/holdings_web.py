@@ -403,13 +403,62 @@ def tail_file(path: Path, max_lines: int = 8) -> str:
 
 def health_payload() -> dict[str, Any]:
     units = [systemctl_show(unit) for unit in [*SERVICE_UNITS, *TIMER_UNITS]]
+    sources: list[dict[str, Any]] = []
+    with connect_sqlite(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if table_exists(conn, "source_health"):
+            for row in conn.execute(
+                """
+                SELECT monitor, source, consecutive_failures, last_success_at, last_failure_at,
+                       last_error, last_alerted_at, updated_at
+                FROM source_health
+                ORDER BY consecutive_failures DESC, updated_at DESC
+                LIMIT 200
+                """
+            ):
+                sources.append(
+                    {
+                        "monitor": row["monitor"],
+                        "source": row["source"],
+                        "status": "failing" if int(row["consecutive_failures"] or 0) else "ok",
+                        "consecutive_failures": int(row["consecutive_failures"] or 0),
+                        "last_success_at": row["last_success_at"] or "",
+                        "last_failure_at": row["last_failure_at"] or "",
+                        "last_error": row["last_error"] or "",
+                        "last_alerted_at": row["last_alerted_at"] or "",
+                        "updated_at": row["updated_at"] or "",
+                    }
+                )
+        if table_exists(conn, "x_stream_health"):
+            for row in conn.execute(
+                """
+                SELECT issue_key, status, failure_count, first_failed_at, last_failed_at,
+                       last_error, last_alerted_at, last_recovered_at
+                FROM x_stream_health
+                ORDER BY CASE WHEN status = 'failing' THEN 0 ELSE 1 END, failure_count DESC, last_failed_at DESC
+                LIMIT 80
+                """
+            ):
+                sources.append(
+                    {
+                        "monitor": "x_stream_detail",
+                        "source": row["issue_key"],
+                        "status": row["status"] or "",
+                        "consecutive_failures": int(row["failure_count"] or 0),
+                        "last_success_at": row["last_recovered_at"] or "",
+                        "last_failure_at": row["last_failed_at"] or "",
+                        "last_error": row["last_error"] or "",
+                        "last_alerted_at": row["last_alerted_at"] or "",
+                        "updated_at": row["last_failed_at"] or row["last_recovered_at"] or "",
+                    }
+                )
     logs_dir = ROOT / "logs"
     logs = []
     for name in LOG_FILES:
         tail = tail_file(logs_dir / name)
         if tail:
             logs.append({"name": name, "tail": tail})
-    return {"ok": True, "units": units, "logs": logs}
+    return {"ok": True, "units": units, "sources": sources, "logs": logs}
 
 
 def html_page(token_required: bool) -> str:
@@ -580,6 +629,25 @@ def html_page(token_required: bool) -> str:
               </tr>
             </thead>
             <tbody id="healthRows"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel" style="margin-top:12px">
+        <div class="list-row" style="padding:10px 12px"><strong>来源健康</strong></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:160px">模块</th>
+                <th style="width:210px">来源</th>
+                <th style="width:90px">状态</th>
+                <th style="width:90px">失败</th>
+                <th style="width:180px">最近成功</th>
+                <th style="width:180px">最近失败</th>
+                <th>错误</th>
+              </tr>
+            </thead>
+            <tbody id="sourceHealthRows"></tbody>
           </table>
         </div>
       </section>
@@ -855,6 +923,17 @@ async function loadHealth() {{
         <td>${{escapeHtml(unit.ExecMainStartTimestamp || unit.LastTriggerUSec || unit.NextElapseUSecRealtime || '')}}</td>
       </tr>
     `).join('');
+    document.getElementById('sourceHealthRows').innerHTML = (data.sources || []).map(source => `
+      <tr>
+        <td>${{escapeHtml(source.monitor || '')}}</td>
+        <td>${{escapeHtml(source.source || '')}}</td>
+        <td>${{badge(source.status || '')}}</td>
+        <td>${{escapeHtml(String(source.consecutive_failures || 0))}}</td>
+        <td>${{formatTime(source.last_success_at || '')}}</td>
+        <td>${{formatTime(source.last_failure_at || '')}}</td>
+        <td class="summary-cell">${{escapeHtml(shortText(source.last_error || '', 180))}}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="7">暂无来源健康记录。</td></tr>';
     document.getElementById('healthLogs').innerHTML = (data.logs || []).map(log => `
       <section class="panel" style="margin-top:12px">
         <div class="list-row" style="padding:10px 12px"><strong>${{escapeHtml(log.name)}}</strong></div>
