@@ -19,6 +19,18 @@ CREATE TABLE IF NOT EXISTS source_state (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_health (
+    monitor TEXT NOT NULL,
+    source TEXT NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    last_error TEXT,
+    last_alerted_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (monitor, source)
+);
+
 CREATE TABLE IF NOT EXISTS stocks (
     symbol TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -186,4 +198,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -5,16 +5,19 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 import re
 import sqlite3
 import time
-import urllib.request
-import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Iterable
+
+import feedparser
+import trafilatura
 
 from article_gate import (
     article_gate_enabled,
@@ -29,6 +32,7 @@ from article_gate import (
 from cards import build_article_card
 from db_utils import connect_sqlite, retry_on_locked
 from feishu import send_card
+from http_utils import http_get
 from llm_analysis import llm_config
 from media_sources import is_overseas_media_source, overseas_media_access_note, overseas_media_module
 from media_keyword_config import is_media_focus_item
@@ -43,6 +47,7 @@ from official_news_gate import (
 )
 from trendforce_sources import DEFAULT_RSS_FEEDS
 from x_check import load_env
+from source_health import record_source_failure, record_source_success
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +94,15 @@ def connect_db() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS source_state (
+            source TEXT PRIMARY KEY,
+            state_json TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         INSERT OR IGNORE INTO seen_sources (source, first_seen_at)
         SELECT source, MIN(first_seen_at)
         FROM seen_items
@@ -97,36 +111,6 @@ def connect_db() -> sqlite3.Connection:
     )
     conn.commit()
     return conn
-
-
-def text_of(parent: ET.Element, tag: str) -> str:
-    child = parent.find(tag)
-    return (child.text or "").strip() if child is not None else ""
-
-
-def namespaced_text(parent: ET.Element, namespace: str, tag: str) -> str:
-    child = parent.find(f"{{{namespace}}}{tag}")
-    return (child.text or "").strip() if child is not None else ""
-
-
-def element_text(element: ET.Element | None) -> str:
-    if element is None:
-        return ""
-    return "".join(element.itertext()).strip()
-
-
-def atom_link(entry: ET.Element, atom_ns: str) -> str:
-    fallback = ""
-    for link in entry.findall(f"{{{atom_ns}}}link"):
-        href = (link.attrib.get("href") or "").strip()
-        if not href:
-            continue
-        rel = (link.attrib.get("rel") or "alternate").strip().lower()
-        if rel == "alternate":
-            return href
-        if not fallback:
-            fallback = href
-    return fallback
 
 
 def parse_atom_date(value: str) -> str:
@@ -148,123 +132,127 @@ def parse_date(value: str) -> str:
         return value
 
 
-def fetch_feed(url: str) -> list[dict]:
-    timeout = int(os.getenv("RSS_FETCH_TIMEOUT_SECONDS", "15"))
-    retries = int(os.getenv("RSS_FETCH_RETRY_COUNT", "1"))
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "surveil-rss-monitor/0.1",
-            "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-        },
+def feed_state_key(source: str) -> str:
+    return f"rss_feed:{source}"
+
+
+def load_source_state(conn: sqlite3.Connection, source: str) -> dict:
+    row = conn.execute("SELECT state_json FROM source_state WHERE source = ?", (feed_state_key(source),)).fetchone()
+    if not row or not row[0]:
+        return {}
+    try:
+        parsed = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def save_source_state(conn: sqlite3.Connection, source: str, state: dict) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO source_state (source, state_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(source) DO UPDATE SET
+            state_json = excluded.state_json,
+            updated_at = excluded.updated_at
+        """,
+        (feed_state_key(source), json.dumps(state, ensure_ascii=False, sort_keys=True), now),
     )
-    last_error: Exception | None = None
-    for attempt in range(max(1, retries + 1)):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                content = response.read()
-            break
-        except Exception as exc:
-            last_error = exc
-            if attempt >= retries:
-                raise
-            time.sleep(2 + attempt * 3)
-    else:
-        raise RuntimeError(f"RSS 抓取失败：{last_error}")
-    root = ET.fromstring(content)
-    if root.tag.endswith("feed"):
-        return parse_atom_feed(root)
-    if root.tag.endswith("RDF"):
-        return parse_rdf_feed(root)
-    channel = root.find("channel")
-    if channel is None:
+
+
+def feed_entry_value(entry: dict, key: str) -> str:
+    value = entry.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def feed_entry_content(entry: dict) -> str:
+    contents = entry.get("content")
+    if isinstance(contents, list):
+        parts = []
+        for item in contents:
+            if isinstance(item, dict):
+                parts.append(str(item.get("value") or ""))
+        return "\n\n".join(part for part in parts if part).strip()
+    return ""
+
+
+def feed_entry_categories(entry: dict) -> list[str]:
+    tags = entry.get("tags")
+    if not isinstance(tags, list):
         return []
+    categories = []
+    for tag in tags:
+        if isinstance(tag, dict):
+            term = str(tag.get("term") or "").strip()
+            if term:
+                categories.append(term)
+    return categories
+
+
+def parsed_feed_items(parsed: feedparser.FeedParserDict) -> list[dict]:
     items = []
-    for item in channel.findall("item"):
-        title = text_of(item, "title")
-        link = text_of(item, "link")
-        guid = text_of(item, "guid") or link or title
-        summary = text_of(item, "description")
-        content = namespaced_text(item, "http://purl.org/rss/1.0/modules/content/", "encoded")
-        categories = [category.text.strip() for category in item.findall("category") if category.text]
-        published_at = parse_date(text_of(item, "pubDate"))
+    for entry in parsed.entries:
+        title = feed_entry_value(entry, "title")
+        link = feed_entry_value(entry, "link")
+        guid = feed_entry_value(entry, "id") or feed_entry_value(entry, "guid") or link or title
+        summary = feed_entry_value(entry, "summary") or feed_entry_value(entry, "description")
+        content = feed_entry_content(entry)
+        published_at = parse_atom_date(
+            feed_entry_value(entry, "published")
+            or feed_entry_value(entry, "updated")
+            or feed_entry_value(entry, "created")
+        )
         items.append(
             {
                 "id": guid,
                 "url": link,
-                "title": title,
+                "title": strip_tags(title),
                 "summary": summary,
                 "content": content,
-                "categories": categories,
+                "categories": feed_entry_categories(entry),
                 "published_at": published_at,
             }
         )
     return items
 
 
-def parse_rdf_feed(root: ET.Element) -> list[dict]:
-    rdf_ns = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-    rss_ns = "http://purl.org/rss/1.0/"
-    dc_ns = "http://purl.org/dc/elements/1.1/"
-    items = []
-    for item in root.findall(f"{{{rss_ns}}}item"):
-        title = element_text(item.find(f"{{{rss_ns}}}title"))
-        link = element_text(item.find(f"{{{rss_ns}}}link"))
-        guid = (item.attrib.get(f"{{{rdf_ns}}}about") or link or title).strip()
-        summary = element_text(item.find(f"{{{rss_ns}}}description"))
-        published_at = parse_atom_date(element_text(item.find(f"{{{dc_ns}}}date")))
-        items.append(
-            {
-                "id": guid,
-                "url": link,
-                "title": title,
-                "summary": summary,
-                "content": "",
-                "categories": [],
-                "published_at": published_at,
-            }
-        )
-    return items
+def fetch_feed(source: str, url: str, state: dict | None = None) -> tuple[list[dict], dict, bool]:
+    timeout = int(os.getenv("RSS_FETCH_TIMEOUT_SECONDS", "15"))
+    retries = int(os.getenv("RSS_FETCH_RETRY_COUNT", os.getenv("SURVEIL_HTTP_RETRY_COUNT", "1")))
+    headers = {
+        "Accept": "application/rss+xml, application/atom+xml, application/rdf+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    }
+    state = state or {}
+    if state.get("etag"):
+        headers["If-None-Match"] = str(state["etag"])
+    if state.get("modified"):
+        headers["If-Modified-Since"] = str(state["modified"])
+    response = http_get(url, headers=headers, timeout=timeout, retries=retries)
+    next_state = dict(state)
+    if response.status_code == 304:
+        next_state["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+        return [], next_state, True
 
-
-def parse_atom_feed(root: ET.Element) -> list[dict]:
-    atom_ns = "http://www.w3.org/2005/Atom"
-    entries = root.findall(f"{{{atom_ns}}}entry")
-    if not entries and root.tag == "feed":
-        entries = root.findall("entry")
-        atom_ns = ""
-
-    def find(entry: ET.Element, tag: str) -> ET.Element | None:
-        if atom_ns:
-            return entry.find(f"{{{atom_ns}}}{tag}")
-        return entry.find(tag)
-
-    items = []
-    for entry in entries:
-        title = element_text(find(entry, "title"))
-        link = atom_link(entry, atom_ns) if atom_ns else ""
-        if not link:
-            link_el = find(entry, "link")
-            link = (link_el.attrib.get("href") or element_text(link_el)).strip() if link_el is not None else ""
-        guid = element_text(find(entry, "id")) or link or title
-        summary = element_text(find(entry, "summary")) or element_text(find(entry, "subtitle"))
-        content = element_text(find(entry, "content"))
-        category_nodes = entry.findall(f"{{{atom_ns}}}category") if atom_ns else entry.findall("category")
-        categories = [category.attrib.get("term", "").strip() for category in category_nodes]
-        categories = [category for category in categories if category]
-        published_at = parse_atom_date(element_text(find(entry, "published")) or element_text(find(entry, "updated")))
-        items.append(
-            {
-                "id": guid,
-                "url": link,
-                "title": title,
-                "summary": summary,
-                "content": content,
-                "categories": categories,
-                "published_at": published_at,
-            }
-        )
-    return items
+    parsed = feedparser.parse(response.content)
+    if parsed.get("bozo") and parsed.get("bozo_exception"):
+        print(f"{source} feedparser warning: {parsed.get('bozo_exception')}", flush=True)
+    etag = response.headers.get("etag") or parsed.get("etag")
+    modified = response.headers.get("last-modified")
+    parsed_modified = parsed.get("modified")
+    if not modified and parsed_modified:
+        modified = parsed_modified if isinstance(parsed_modified, str) else ""
+    if etag:
+        next_state["etag"] = str(etag)
+    if modified:
+        next_state["modified"] = str(modified)
+    next_state["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+    next_state["last_status_code"] = response.status_code
+    return parsed_feed_items(parsed), next_state, False
 
 
 def strip_tags(value: str) -> str:
@@ -278,15 +266,22 @@ def strip_tags(value: str) -> str:
 def fetch_article_body(url: str) -> tuple[str, str]:
     if not url:
         return "", "RSS"
-    request = urllib.request.Request(
+    response = http_get(
         url,
-        headers={
-            "User-Agent": "surveil-rss-monitor/0.1",
-            "Accept": "text/html,application/xhtml+xml",
-        },
+        headers={"Accept": "text/html,application/xhtml+xml"},
+        timeout=int(os.getenv("RSS_ARTICLE_FETCH_TIMEOUT_SECONDS", "30")),
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        html_text = response.read().decode("utf-8", errors="replace")
+    html_text = response.content.decode("utf-8", errors="replace")
+
+    extracted = trafilatura.extract(
+        html_text,
+        url=response.url,
+        include_comments=False,
+        include_tables=False,
+        favor_recall=True,
+    )
+    if extracted and len(extracted.strip()) > 80:
+        return extracted.strip(), "页面正文"
 
     paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", html_text)
     cleaned = [strip_tags(p) for p in paragraphs]
@@ -482,18 +477,48 @@ def filter_items(source: str, items: list[dict]) -> list[dict]:
 
 def run_once(feeds: dict[str, str], notify_baseline: bool = False) -> int:
     total_new = 0
-    for source, url in feeds.items():
+    with connect_db() as conn:
+        feed_states = {source: load_source_state(conn, source) for source in feeds}
+    max_workers = max(1, int(os.getenv("RSS_FETCH_MAX_WORKERS", "8") or "8"))
+    fetched: dict[str, tuple[list[dict], dict, bool]] = {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(feeds)))) as executor:
+        futures = {
+            executor.submit(fetch_feed, source, url, feed_states.get(source, {})): source
+            for source, url in feeds.items()
+        }
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                fetched[source] = future.result()
+                with connect_db() as conn:
+                    record_source_success(conn, "rss_monitor", source)
+            except Exception as exc:
+                with connect_db() as conn:
+                    record_source_failure(conn, "rss_monitor", source, exc)
+                print(f"{source} 抓取失败：{exc}", flush=True)
+
+    for source, _url in feeds.items():
+        if source not in fetched:
+            continue
         try:
-            items = filter_items(source, fetch_feed(url))
+            items, next_state, not_modified = fetched[source]
+            with connect_db() as conn:
+                save_source_state(conn, source, next_state)
+            if not_modified:
+                print(f"{source}: feed 未变化。", flush=True)
+                continue
+            items = filter_items(source, items)
             new_items = save_new_items_with_retry(source, items, notify_baseline=notify_baseline)
         except Exception as exc:
-            print(f"{source} 抓取失败：{exc}")
+            with connect_db() as conn:
+                record_source_failure(conn, "rss_monitor", source, exc)
+            print(f"{source} 处理失败：{exc}", flush=True)
             continue
         if not new_items:
-            print(f"{source}: 没有发现新文章。")
+            print(f"{source}: 没有发现新文章。", flush=True)
             continue
         total_new += len(new_items)
-        print(f"{source}: 发现 {len(new_items)} 篇新文章。")
+        print(f"{source}: 发现 {len(new_items)} 篇新文章。", flush=True)
         for item in new_items:
             print("=" * 80)
             print(item.get("title", ""))

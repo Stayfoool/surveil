@@ -124,9 +124,8 @@ def main() -> int:
                 findings.extend(scan_file(start, root))
             continue
         for path in start.rglob("*"):
-            resolved = path.resolve()
-            if resolved.is_file() and not should_skip(resolved, root):
-                findings.extend(scan_file(resolved, root))
+            if path.is_file() and not should_skip(path, root):
+                findings.extend(scan_file(path, root))
 
     if findings:
         print("Potential secret or personal deployment data found:", file=sys.stderr)
