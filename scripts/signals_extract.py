@@ -29,6 +29,7 @@ from signal_store import (
 IMPORTANT_LEVELS = {"high", "medium"}
 SKIPPED_SOURCES = {"jygs", "jygs_actions", "jygs_events"}
 A_SHARE_CODE_RE = re.compile(r"(?<!\d)([034689][0-9]{5})(?:\.(SZ|SH|BJ))?(?!\d)", re.IGNORECASE)
+SUFFIXED_A_SHARE_CODE_RE = re.compile(r"(?<!\d)([034689][0-9]{5})\.(SZ|SH|BJ)(?!\d)", re.IGNORECASE)
 CASHTAG_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9._-]{0,12})")
 
 
@@ -118,6 +119,21 @@ def normalize_a_share_code(code: str, suffix: str = "") -> str:
     return normalize_symbol(f"{raw}.{exchange}" if exchange else raw)
 
 
+def known_a_share_symbol(conn: sqlite3.Connection, code: str) -> tuple[str, str] | None:
+    raw = str(code or "").strip()
+    if not raw:
+        return None
+    candidates = [
+        normalize_a_share_code(raw, suffix)
+        for suffix in ("SZ", "SH", "BJ")
+    ]
+    names = {**stock_names(conn), **holding_names(conn)}
+    for symbol in candidates:
+        if symbol in names:
+            return symbol, names.get(symbol, "")
+    return None
+
+
 def target_from_text(
     conn: sqlite3.Connection,
     text: str,
@@ -132,7 +148,7 @@ def target_from_text(
         return None
     holdings = holding_names(conn)
     stocks = stock_names(conn)
-    match = A_SHARE_CODE_RE.search(value)
+    match = SUFFIXED_A_SHARE_CODE_RE.search(value)
     if match:
         symbol = normalize_a_share_code(match.group(1), match.group(2) or "")
         return target_from_symbol(
@@ -144,6 +160,20 @@ def target_from_text(
             reason=reason or value,
             confidence=confidence,
         )
+    match = A_SHARE_CODE_RE.search(value)
+    if match:
+        known = known_a_share_symbol(conn, match.group(1))
+        if known:
+            symbol, known_name = known
+            return target_from_symbol(
+                symbol,
+                name=known_name,
+                role="holding" if symbol in holdings else role,
+                direction=direction,
+                relation_type="matched_known_code",
+                reason=reason or value,
+                confidence=confidence,
+            )
     for name, (symbol, official_name) in sorted(name_to_symbol(conn).items(), key=lambda item: len(item[0]), reverse=True):
         if name and name in value:
             return target_from_symbol(

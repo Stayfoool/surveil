@@ -12,7 +12,7 @@ from article_gate import ensure_article_reviews_table
 from market_db import init_db
 from official_news_gate import ensure_official_news_table
 from signal_outcome_update import compute_metrics, quote_rows_from_response
-from signals_extract import extract_signals
+from signals_extract import extract_signals, target_from_text, x_targets
 
 
 NOW = "2026-06-29T02:00:00+00:00"
@@ -282,9 +282,24 @@ def test_outcome_metrics_from_ifind_like_response() -> None:
     assert outcome_json["quote_count"] == 4
 
 
+def test_bare_foreign_numeric_codes_do_not_become_a_share_symbols() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        seed_db(path)
+        conn = init_db(path)
+        assert target_from_text(conn, "京东方A（000725.SZ）")["symbol"] == "000725.SZ"
+        assert target_from_text(conn, "京东方A")["symbol"] == "000725.SZ"
+        foreign = target_from_text(conn, "Samsung Electronics 005930 / SK hynix 000660")
+        assert foreign is not None
+        assert foreign.get("symbol") in (None, "")
+        assert all(target.get("symbol") != "005930.SZ" for target in x_targets(conn, "005930 and 000660"))
+        conn.close()
+
+
 def main() -> int:
     test_extract_signals_from_existing_sources()
     test_outcome_metrics_from_ifind_like_response()
+    test_bare_foreign_numeric_codes_do_not_become_a_share_symbols()
     print("signal extraction/outcome tests OK")
     return 0
 
