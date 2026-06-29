@@ -62,6 +62,23 @@ Deploy code:
 ./scripts/deploy_remote.sh
 ```
 
+`deploy_remote.sh` writes a server-side revision marker at `$REMOTE_DIR/REVISION`:
+
+```text
+commit=<local git commit>
+branch=<local branch>
+origin_commit=<origin branch commit>
+dirty=<0 or 1>
+deployed_at=<UTC timestamp>
+deployed_by=deploy_remote.sh
+```
+
+Use it to verify whether your Mac, GitHub, and server are aligned:
+
+```bash
+python3 scripts/status_sync.py
+```
+
 Write secrets:
 
 ```bash
@@ -114,6 +131,16 @@ Recommended model:
 - Use the Web workbench or SSH scripts to edit secrets.
 
 Run the `Deploy` workflow manually from GitHub Actions.
+
+For local operator convenience, the repository also includes a `Justfile`:
+
+```bash
+just test
+just status
+just deploy
+just remote-timers
+just remote-revision
+```
 
 ## Optional Proxy
 

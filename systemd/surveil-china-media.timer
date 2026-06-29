@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Surveil domestic finance media batch every 2 minutes
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=surveil-china-media.service
+
+[Install]
+WantedBy=timers.target

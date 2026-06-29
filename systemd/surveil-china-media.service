@@ -1,0 +1,14 @@
+[Unit]
+Description=Surveil domestic finance media batch
+After=network-online.target surveil-db-init.service surveil-proxy.service
+Wants=network-online.target surveil-proxy.service
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+EnvironmentFile=-/opt/surveil/proxy.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/china_finance_media_monitor.py
+StandardOutput=append:/opt/surveil/logs/china-media.log
+StandardError=append:/opt/surveil/logs/china-media.err.log

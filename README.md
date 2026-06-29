@@ -184,6 +184,26 @@ DEPLOY_PROXY_DIR
 
 The deploy workflow runs `scripts/deploy_remote.sh` over SSH/rsync. It does not write your business/API secrets; configure those on the server through `.env`, the Web workbench, or the write helper scripts.
 
+## Sync Harness
+
+Use GitHub as the source of truth for code. The server is a runtime target and stores only deployed code, `.env`, SQLite data, logs, and other private runtime state.
+
+Deployment writes `/opt/surveil/REVISION` on the server with the deployed commit, branch, dirty flag, and timestamp. Check local/GitHub/server alignment with:
+
+```bash
+python3 scripts/status_sync.py
+```
+
+If you use `just`:
+
+```bash
+just status
+just deploy
+just remote-revision
+```
+
+`just status-strict` exits non-zero when the local tree is dirty, local `HEAD` differs from `origin/main`, or the server deployed commit differs from GitHub.
+
 ## PR Automation
 
 This repository uses GitHub Actions and Dependabot for low-risk PR automation:

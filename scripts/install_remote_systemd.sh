@@ -46,6 +46,7 @@ journalctl -u surveil-db-init.service -n 20 --no-pager
 systemctl enable --now surveil-ifind-notice.timer
 systemctl enable --now surveil-sina-stock-news.timer
 systemctl enable --now surveil-overseas-media.timer
+systemctl enable --now surveil-china-media.timer
 systemctl enable --now surveil-article-daily.timer
 systemctl enable --now surveil-rss-monitor.service
 systemctl enable --now surveil-trendforce-page-monitor.service
@@ -71,5 +72,5 @@ systemctl --no-pager --full status surveil-holdings-web.service || true
 systemctl --no-pager --full status surveil-rss-monitor.service || true
 systemctl --no-pager --full status surveil-trendforce-page-monitor.service || true
 systemctl --no-pager --full status surveil-x-stream.service || true
-echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、RSS/TrendForce/海外媒体、文章日报、韭研公社定时器、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
+echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、中国财经媒体、RSS/TrendForce/海外媒体、文章日报、韭研公社定时器、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
 "

@@ -28,6 +28,16 @@ jobs:
           REMOTE_SERVICE_USER: ${{ secrets.DEPLOY_SERVICE_USER }}
         run: ./scripts/deploy_remote.sh
 
+      - name: Install systemd units
+        env:
+          REMOTE_HOST: ${{ secrets.DEPLOY_HOST }}
+          REMOTE_USER: ${{ secrets.DEPLOY_USER }}
+          REMOTE_SSH_KEY: ~/.ssh/deploy_key
+          REMOTE_DIR: ${{ secrets.DEPLOY_DIR }}
+          REMOTE_PROXY_DIR: ${{ secrets.DEPLOY_PROXY_DIR }}
+          REMOTE_SERVICE_USER: ${{ secrets.DEPLOY_SERVICE_USER }}
+        run: ./scripts/install_remote_systemd.sh
+
       - name: Restart Web workbench
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}

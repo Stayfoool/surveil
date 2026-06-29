@@ -246,6 +246,8 @@ def call_chat_completion_with_prompts(
         "max_tokens": max_tokens_override or max_output_tokens(),
     }
     thinking = (thinking_override or thinking_type(base_url, model)).strip().lower()
+    if "deepseek" in base_url.lower() and thinking == "enabled" and os.getenv("LLM_ALLOW_DEEPSEEK_THINKING", "").strip() != "1":
+        thinking = "disabled"
     if thinking in {"enabled", "disabled"}:
         payload["thinking"] = {"type": thinking}
     if json_response_format_enabled(base_url):
@@ -298,7 +300,12 @@ def call_chat_completion_with_prompts(
     if not choices:
         raise RuntimeError(f"LLM 响应缺少 choices：{body[:500]}")
     message = choices[0].get("message") or {}
-    raw_content = str(message.get("content") or "").strip()
+    raw_content = str(
+        message.get("content")
+        or message.get("reasoning_content")
+        or message.get("output_text")
+        or ""
+    ).strip()
     if not raw_content:
         raise RuntimeError("LLM 响应为空")
     return parse_json_object(raw_content), model
@@ -330,17 +337,60 @@ def parse_json_object(raw: str) -> dict[str, Any]:
 
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.S)
     if fenced:
-        parsed = json.loads(fenced.group(1))
-        if isinstance(parsed, dict):
-            return parsed
+        try:
+            parsed = json.loads(fenced.group(1))
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    balanced = extract_balanced_json_object(raw)
+    if balanced:
+        try:
+            parsed = json.loads(balanced)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
 
     start = raw.find("{")
     end = raw.rfind("}")
     if start >= 0 and end > start:
-        parsed = json.loads(raw[start : end + 1])
-        if isinstance(parsed, dict):
-            return parsed
+        try:
+            parsed = json.loads(raw[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
     raise ValueError("无法从 LLM 输出解析 JSON")
+
+
+def extract_balanced_json_object(raw: str) -> str | None:
+    start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(raw)):
+        char = raw[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start : index + 1]
+    return None
 
 
 def as_list(value: Any) -> list[Any]:
