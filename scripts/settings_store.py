@@ -80,7 +80,7 @@ SETTING_GROUPS: list[dict[str, Any]] = [
         "title": "新浪智研 / 新浪新闻",
         "restart_hint": "保存后建议重启新浪快讯常驻服务；个股资讯 timer 下一次运行会读取新配置。",
         "fields": [
-            SettingField("SINA_NEWS_PROVIDER", "新闻源", "sina", placeholder="zy_api"),
+            SettingField("SINA_NEWS_PROVIDER", "新闻源", "sina", placeholder="legacy"),
             SettingField("SINA_ZY_API_BASE_URL", "智研 API Base URL", "sina"),
             SettingField("SINA_ZY_API_KEY", "智研 API Key", "sina", sensitive=True),
             SettingField("SINA_ZY_TIMEOUT_SECONDS", "智研超时秒数", "sina", placeholder="20"),

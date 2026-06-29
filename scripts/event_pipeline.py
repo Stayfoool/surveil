@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from db_utils import connect_sqlite
-from feishu import send_card
+from feishu import send_card_with_response
 from llm_analysis import call_chat_completion_with_prompts, format_llm_analysis
 from market_db import DEFAULT_DB_PATH, init_db
 
@@ -393,23 +393,60 @@ def maybe_deliver_event(event_id: int, analysis: dict[str, Any], db_path: Path =
     lines = format_llm_analysis(analysis, str(analysis.get("_model") or "llm"))
     card = simple_event_card(source, title, summary or full_text, url, published_at, lines)
     try:
-        sent = send_card(card)
+        response = send_card_with_response(card)
     except Exception as exc:  # noqa: BLE001 - keep delivery failures isolated
-        record_delivery(event_id, "feishu", "failed", {"error": str(exc)}, db_path=db_path)
+        record_delivery(
+            event_id,
+            "feishu",
+            "failed",
+            {
+                "error": str(exc),
+                "webhook_fingerprint": feishu_webhook_fingerprint(),
+            },
+            error=str(exc),
+            db_path=db_path,
+        )
         return "failed"
-    status = "sent" if sent else "skipped"
-    record_delivery(event_id, "feishu", status, {"title": title}, db_path=db_path)
+    status = "sent" if response.ok else "skipped"
+    record_delivery(
+        event_id,
+        "feishu",
+        status,
+        {
+            "title": title,
+            "webhook_fingerprint": feishu_webhook_fingerprint(),
+            "feishu_code": response.code,
+            "feishu_message": response.message,
+            "feishu_body": response.body[:1000],
+        },
+        db_path=db_path,
+    )
     return status
 
 
-def record_delivery(event_id: int, channel: str, status: str, payload: dict[str, Any], db_path: Path = DEFAULT_DB_PATH) -> None:
+def feishu_webhook_fingerprint() -> str:
+    webhook = os.getenv("FEISHU_WEBHOOK", "").strip()
+    if not webhook:
+        return ""
+    return hashlib.sha256(webhook.encode("utf-8")).hexdigest()[:12]
+
+
+def record_delivery(
+    event_id: int,
+    channel: str,
+    status: str,
+    payload: dict[str, Any],
+    *,
+    error: str = "",
+    db_path: Path = DEFAULT_DB_PATH,
+) -> None:
     with connect_sqlite(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO deliveries (event_id, channel, status, sent_at, payload_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO deliveries (event_id, channel, status, sent_at, error, payload_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (event_id, channel, status, utc_now() if status == "sent" else "", json_dumps(payload)),
+            (event_id, channel, status, utc_now() if status == "sent" else "", error, json_dumps(payload)),
         )
         conn.commit()
 
