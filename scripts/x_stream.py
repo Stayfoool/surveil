@@ -20,6 +20,7 @@ from db_utils import connect_sqlite, retry_on_locked
 from feishu import send_card, send_text
 from link_enrichment import enrich_post_links
 from llm_analysis import llm_config
+from source_health import record_source_failure, record_source_success
 from x_check import configured_x_username, load_env, post_text, refresh_oauth2_token, request_with_available_tokens
 
 
@@ -162,6 +163,8 @@ def notify_health_alert(issue_title: str, lines: list[str]) -> None:
 def record_stream_failure(error_text: str, *, status_code: int | None = None, phase: str = "stream") -> None:
     issue_key, issue_name, immediate = classify_stream_error(error_text, status_code=status_code, phase=phase)
     now = utc_now_iso()
+    with connect_db() as conn:
+        record_source_failure(conn, "x_stream", issue_key, error_text)
 
     def operation() -> tuple[int, str, str]:
         with connect_db() as conn:
@@ -243,14 +246,13 @@ def record_stream_failure(error_text: str, *, status_code: int | None = None, ph
 def record_stream_recovery(phase: str = "stream") -> None:
     now = utc_now_iso()
 
-    def operation() -> list[tuple[str, int, str, str]]:
+    def operation() -> list[tuple[str, int, str, str, bool]]:
         with connect_db() as conn:
             rows = conn.execute(
                 """
-                SELECT issue_key, failure_count, first_failed_at, last_error
+                SELECT issue_key, failure_count, first_failed_at, last_error, last_alerted_at
                 FROM x_stream_health
                 WHERE status = 'failing'
-                  AND last_alerted_at IS NOT NULL
                 """
             ).fetchall()
             conn.execute(
@@ -264,10 +266,18 @@ def record_stream_recovery(phase: str = "stream") -> None:
                 (now,),
             )
             conn.commit()
-        return [(str(key), int(count or 0), str(first or ""), str(error or "")) for key, count, first, error in rows]
+        return [
+            (str(key), int(count or 0), str(first or ""), str(error or ""), bool(alerted))
+            for key, count, first, error, alerted in rows
+        ]
 
     recovered = retry_on_locked(operation)
-    if not recovered:
+    with connect_db() as conn:
+        record_source_success(conn, "x_stream", phase)
+        for key, *_ in recovered:
+            record_source_success(conn, "x_stream", key)
+    alerted_recovered = [row for row in recovered if row[4]]
+    if not alerted_recovered:
         return
     names = {
         "too_many_connections": "X API stream 连接数超限",
@@ -284,7 +294,7 @@ def record_stream_recovery(phase: str = "stream") -> None:
     }
     issue_lines = [
         f"- {names.get(key, key)}：失败 {count} 次，首次 {first or 'unknown'}"
-        for key, count, first, _ in recovered
+        for key, count, first, _, _alerted in alerted_recovered
     ]
     notify_health_alert(
         "Surveil 恢复：X/Serenity stream 已恢复",
@@ -624,7 +634,12 @@ def notify_post(post: dict[str, Any]) -> bool:
             print(f"已抓取 X 外链 {len(links)} 条。", flush=True)
     except Exception as exc:
         print(f"X 外链抓取失败：{exc}", flush=True)
+        with connect_db() as conn:
+            record_source_failure(conn, "x_stream", "link_enrichment", exc)
         post["_links"] = []
+    else:
+        with connect_db() as conn:
+            record_source_success(conn, "x_stream", "link_enrichment")
     merge_linked_status_links(post)
     return send_card(build_serenity_card(post))
 

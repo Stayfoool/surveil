@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+
+import httpx
+
+from http_utils import http_post
 
 
 DEFAULT_MCP_URL = "http://mcp.finance.sina.com.cn/mcp-http"
@@ -94,26 +96,25 @@ class SinaZyMcpClient:
             "params": params or {},
         }
         self._next_id += 1
-        request = urllib.request.Request(
-            self.base_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers=self._headers(),
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                if not self.session_id:
-                    self.session_id = response.headers.get("Mcp-Session-Id", "") or response.headers.get(
-                        "mcp-session-id", ""
-                    )
-                body = response.read()
-                parsed = self._parse_body(body, response.headers.get("Content-Type", ""))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:500]
-            if exc.code in {401, 403}:
+            response = http_post(
+                self.base_url,
+                content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+            if not self.session_id:
+                self.session_id = response.headers.get("Mcp-Session-Id", "") or response.headers.get(
+                    "mcp-session-id", ""
+                )
+            parsed = self._parse_body(response.content, response.headers.get("Content-Type", ""))
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:500] if exc.response is not None else ""
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            if status_code in {401, 403}:
                 raise SinaZyError("新浪智研 API Key 未授权或已失效") from exc
-            raise SinaZyError(f"新浪智研请求失败 HTTP {exc.code}: {detail}") from exc
-        except urllib.error.URLError as exc:
+            raise SinaZyError(f"新浪智研请求失败 HTTP {status_code}: {detail}") from exc
+        except httpx.HTTPError as exc:
             raise SinaZyError(f"新浪智研网络请求失败：{exc}") from exc
 
         if parsed.get("error"):

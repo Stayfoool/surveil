@@ -6,7 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Mapping
+from typing import Any, Mapping
 
 import httpx
 
@@ -120,3 +120,39 @@ def http_get(
         except httpx.HTTPStatusError:
             raise
     raise RuntimeError(f"HTTP 请求失败：{last_error}")
+
+
+def http_post(
+    url: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+    content: bytes | str | None = None,
+    json_data: Any = None,
+    timeout: float | None = None,
+    retries: int | None = None,
+) -> HttpResponse:
+    attempts = (retry_count() if retries is None else max(0, retries)) + 1
+    client = get_http_client(timeout)
+    request_headers = dict(headers or {})
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            response = client.post(url, headers=request_headers, content=content, json=json_data)
+            if should_retry_status(response.status_code) and attempt < attempts - 1:
+                time.sleep(retry_sleep(attempt))
+                continue
+            response.raise_for_status()
+            return HttpResponse(
+                status_code=response.status_code,
+                url=str(response.url),
+                headers=response.headers,
+                content=response.content,
+            )
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            last_error = exc
+            if attempt >= attempts - 1:
+                raise
+            time.sleep(retry_sleep(attempt))
+        except httpx.HTTPStatusError:
+            raise
+    raise RuntimeError(f"HTTP POST 请求失败：{last_error}")

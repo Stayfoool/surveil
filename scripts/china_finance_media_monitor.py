@@ -11,6 +11,7 @@ import re
 import sqlite3
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -36,7 +37,7 @@ from china_media_sources import (
     china_media_module,
     is_china_media_source,
 )
-from db_utils import connect_sqlite, ensure_seen_tables, retry_on_locked
+from db_utils import connect_sqlite, ensure_seen_tables, ensure_source_state_table, retry_on_locked
 from env_utils import load_env
 from feishu import send_card
 from http_utils import http_get
@@ -159,6 +160,65 @@ def parse_cls_time(value: Any) -> str:
     return parse_datetime_to_utc_iso(raw)
 
 
+def env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+def load_source_state(source: str) -> dict[str, Any]:
+    with connect_db() as conn:
+        ensure_source_state_table(conn)
+        row = conn.execute("SELECT state_json FROM source_state WHERE source = ?", (source,)).fetchone()
+    if not row:
+        return {}
+    try:
+        parsed = json.loads(row[0] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def save_source_state(source: str, state: dict[str, Any]) -> None:
+    with connect_db() as conn:
+        ensure_source_state_table(conn)
+        conn.execute(
+            """
+            INSERT INTO source_state (source, state_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                state_json = excluded.state_json,
+                updated_at = excluded.updated_at
+            """,
+            (source, json.dumps(state, ensure_ascii=False, sort_keys=True), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+
+def should_skip_cls_poll(source: str, *, force: bool = False) -> bool:
+    if force or os.getenv("CLS_FORCE_FETCH", "").strip() == "1":
+        return False
+    min_seconds = env_int("CLS_MIN_POLL_SECONDS", 60, minimum=0)
+    if min_seconds <= 0:
+        return False
+    state = load_source_state(source)
+    last_fetch = str(state.get("last_fetch_at") or "")
+    if not last_fetch:
+        return False
+    try:
+        elapsed = datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(last_fetch).timestamp()
+    except ValueError:
+        return False
+    if elapsed < min_seconds:
+        print(f"财联社公开前端 API 距上次抓取 {elapsed:.1f}s，小于 {min_seconds}s，跳过本轮。", flush=True)
+        return True
+    return False
+
+
 def parse_first_finance_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     try:
@@ -194,6 +254,9 @@ def parse_first_finance_items() -> list[dict[str, Any]]:
 
 
 def parse_cls_items() -> list[dict[str, Any]]:
+    source = "cls_telegraph_api"
+    if should_skip_cls_poll(source):
+        return []
     params = {
         "app": "CailianpressWeb",
         "category": os.getenv("CLS_ROLL_CATEGORY", ""),
@@ -219,6 +282,7 @@ def parse_cls_items() -> list[dict[str, Any]]:
     except Exception as exc:
         print(f"财联社公开前端 API 读取失败：{exc}", flush=True)
         raise
+    save_source_state(source, {"last_fetch_at": datetime.now(timezone.utc).isoformat()})
 
     if not isinstance(data, dict):
         raise RuntimeError("财联社公开前端 API 响应格式异常：root 不是 JSON object")
@@ -437,17 +501,33 @@ def notify_item(source: str, item: dict[str, Any]) -> None:
 
 
 def run_once(sources: list[str], notify_baseline: bool = False) -> int:
+    if not sources:
+        return 0
     total_new = 0
+    fetched: dict[str, list[dict[str, Any]]] = {}
+    max_workers = min(len(sources), env_int("CHINA_MEDIA_FETCH_MAX_WORKERS", 3, minimum=1))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(source_items, source): source for source in sources}
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                fetched[source] = future.result()
+                with connect_db() as conn:
+                    record_source_success(conn, "china_finance_media", source)
+            except Exception as exc:
+                with connect_db() as conn:
+                    record_source_failure(conn, "china_finance_media", source, exc)
+                print(f"{china_media_module(source)} 抓取失败：{exc}", flush=True)
     for source in sources:
+        if source not in fetched:
+            continue
+        items = fetched[source]
         try:
-            items = source_items(source)
-            with connect_db() as conn:
-                record_source_success(conn, "china_finance_media", source)
             new_items = save_new_items_with_retry(source, items, notify_baseline=notify_baseline)
         except Exception as exc:
             with connect_db() as conn:
                 record_source_failure(conn, "china_finance_media", source, exc)
-            print(f"{china_media_module(source)} 抓取失败：{exc}", flush=True)
+            print(f"{china_media_module(source)} 处理失败：{exc}", flush=True)
             continue
         if not new_items:
             print(f"{china_media_module(source)}：没有发现新条目。", flush=True)
