@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,7 +50,7 @@ ENV_PATH = ROOT / ".env"
 
 DOMESTIC_FEED_SOURCES = {
     "yicai_brief": CHINA_MEDIA_FEEDS["yicai_brief"],
-    "cls_telegraph_api": CHINA_MEDIA_FEEDS["cls_telegraph_page"],
+    "cls_telegraph_api": CHINA_MEDIA_FEEDS["cls_telegraph_api"],
     "jin10_rsshub_important": CHINA_MEDIA_FEEDS["jin10_rsshub_important"],
 }
 
@@ -156,6 +157,31 @@ def fetch_json(url: str) -> list[dict[str, Any]]:
     return []
 
 
+def cls_sign(params: dict[str, str]) -> str:
+    """Sign CLS public frontend API params.
+
+    The production web/mobile frontend signs the sorted query string with
+    sha1 first, then md5 over the sha1 hex digest. The sign field itself is
+    intentionally excluded from params.
+    """
+    qs = "&".join(f"{key}={value}" for key, value in sorted(params.items()))
+    return hashlib.md5(hashlib.sha1(qs.encode("utf-8")).hexdigest().encode("utf-8")).hexdigest()
+
+
+def parse_cls_time(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    if raw.isdigit():
+        timestamp = int(raw)
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp // 1000
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    return parse_date(raw)
+
+
 def parse_first_finance_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     try:
@@ -191,36 +217,47 @@ def parse_first_finance_items() -> list[dict[str, Any]]:
 
 
 def parse_cls_items() -> list[dict[str, Any]]:
-    urls = [
-        "https://www.cls.cn/api/csw",
-        "https://m.cls.cn/api/csw",
-    ]
-    data: dict[str, Any] = {}
-    last_error: Exception | None = None
-    for url in urls:
-        try:
-            request = urllib.request.Request(
-                url,
-                data=json.dumps({"lastTime": 0, "keyword": "", "category": "telegraph"}).encode("utf-8"),
-                headers={
-                    "User-Agent": "surveil-china-finance-media/0.1",
-                    "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=UTF-8",
-                    "Origin": "https://www.cls.cn",
-                    "Referer": "https://www.cls.cn/telegraph",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=20) as response:
-                data = json.loads(response.read().decode("utf-8", errors="replace"))
-            break
-        except Exception as exc:
-            last_error = exc
-            data = {}
-    if not data:
-        print(f"财联社公开 API 暂不可用：{last_error}", flush=True)
+    params = {
+        "app": "CailianpressWeb",
+        "category": os.getenv("CLS_ROLL_CATEGORY", ""),
+        "lastTime": os.getenv("CLS_ROLL_LAST_TIME", ""),
+        "os": "web",
+        "refresh_type": os.getenv("CLS_ROLL_REFRESH_TYPE", "1"),
+        "rn": os.getenv("CLS_ROLL_RN", "20"),
+        "sv": os.getenv("CLS_ROLL_SV", "7.7.5"),
+    }
+    signed_params = dict(params)
+    signed_params["sign"] = cls_sign(params)
+    url = f"{DOMESTIC_FEED_SOURCES['cls_telegraph_api']}?{urllib.parse.urlencode(signed_params)}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://m.cls.cn/telegraph",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"财联社公开前端 API 读取失败：{exc}", flush=True)
         return []
-    rows = data.get("data", {}).get("list") if isinstance(data, dict) else []
+
+    if not isinstance(data, dict):
+        print("财联社公开前端 API 响应格式异常：root 不是 JSON object", flush=True)
+        return []
+    errno = data.get("errno", data.get("errNo", data.get("code", 0)))
+    if errno not in (0, "0", None):
+        message = data.get("msg") or data.get("message") or data.get("error") or ""
+        print(f"财联社公开前端 API 返回错误：errno={errno} message={message}", flush=True)
+        return []
+
+    payload = data.get("data")
+    rows = payload.get("roll_data") if isinstance(payload, dict) else []
     if not isinstance(rows, list):
         rows = []
     items: list[dict[str, Any]] = []
@@ -228,21 +265,23 @@ def parse_cls_items() -> list[dict[str, Any]]:
         if not isinstance(row, dict):
             continue
         title = str(row.get("content") or row.get("title") or "").strip()
-        url = str(row.get("shareUrl") or row.get("url") or "").strip()
+        title = strip_tags(title)
+        url = str(row.get("shareurl") or row.get("shareUrl") or row.get("url") or "").strip()
         if not title:
             continue
-        ctime = str(row.get("ctime") or row.get("time") or row.get("published_at") or "").strip()
+        ctime = row.get("ctime") or row.get("time") or row.get("published_at") or ""
+        item_id = str(row.get("id") or row.get("telegraphId") or row.get("ctime") or url or title)
         items.append(
             {
-                "id": str(row.get("id") or row.get("telegraphId") or url or title),
+                "id": item_id,
                 "url": canonical_url(url),
                 "title": title,
                 "summary": title,
                 "content": "",
-                "published_at": parse_date(ctime),
-                "source_module": CHINA_MEDIA_LABELS["cls_telegraph_page"],
-                "access_note": CHINA_MEDIA_ACCESS_NOTES["cls_telegraph_page"],
-                "body_source": "公开 API",
+                "published_at": parse_cls_time(ctime),
+                "source_module": CHINA_MEDIA_LABELS["cls_telegraph_api"],
+                "access_note": CHINA_MEDIA_ACCESS_NOTES["cls_telegraph_api"],
+                "body_source": "公开前端 API",
             }
         )
     return items
