@@ -198,6 +198,128 @@ CREATE TABLE IF NOT EXISTS stock_relations (
     updated_at TEXT NOT NULL,
     UNIQUE(symbol, related_symbol, relation_type)
 );
+
+CREATE TABLE IF NOT EXISTS signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_table TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_item_id TEXT,
+    title TEXT NOT NULL,
+    url TEXT,
+    published_at TEXT,
+    first_seen_at TEXT,
+    pushed_at TEXT,
+    importance TEXT,
+    incremental_classification TEXT,
+    direction TEXT,
+    confidence TEXT,
+    thesis TEXT,
+    invalidation TEXT,
+    model TEXT,
+    prompt_version TEXT,
+    raw_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_table, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at);
+CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source, importance);
+
+CREATE TABLE IF NOT EXISTS signal_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    target_key TEXT NOT NULL,
+    symbol TEXT,
+    name TEXT,
+    market TEXT,
+    target_role TEXT,
+    expected_direction TEXT,
+    expected_horizon TEXT,
+    relation_type TEXT,
+    relation_reason TEXT,
+    confidence TEXT,
+    raw_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(signal_id, target_key, target_role),
+    FOREIGN KEY(signal_id) REFERENCES signals(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_targets_symbol ON signal_targets(symbol);
+
+CREATE TABLE IF NOT EXISTS signal_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    evidence_type TEXT NOT NULL,
+    text TEXT NOT NULL,
+    url TEXT,
+    source TEXT,
+    observed_at TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(signal_id, evidence_type, text),
+    FOREIGN KEY(signal_id) REFERENCES signals(id)
+);
+
+CREATE TABLE IF NOT EXISTS signal_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    target_id INTEGER,
+    symbol TEXT,
+    as_of_date TEXT NOT NULL,
+    return_1d REAL,
+    return_3d REAL,
+    return_5d REAL,
+    return_10d REAL,
+    return_20d REAL,
+    excess_return_1d REAL,
+    excess_return_3d REAL,
+    excess_return_5d REAL,
+    excess_return_10d REAL,
+    excess_return_20d REAL,
+    max_drawdown REAL,
+    max_runup REAL,
+    volume_change REAL,
+    limit_up_days INTEGER,
+    matched_direction TEXT,
+    outcome_status TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(signal_id, symbol, as_of_date),
+    FOREIGN KEY(signal_id) REFERENCES signals(id),
+    FOREIGN KEY(target_id) REFERENCES signal_targets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_outcomes_symbol ON signal_outcomes(symbol, as_of_date);
+
+CREATE TABLE IF NOT EXISTS signal_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER NOT NULL,
+    review_type TEXT NOT NULL,
+    verdict TEXT,
+    error_type TEXT,
+    review_text TEXT NOT NULL,
+    lessons_json TEXT,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(signal_id) REFERENCES signals(id)
+);
+
+CREATE TABLE IF NOT EXISTS source_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    window_days INTEGER NOT NULL,
+    signal_count INTEGER NOT NULL DEFAULT 0,
+    hit_rate REAL,
+    avg_excess_return REAL,
+    median_reaction_lag REAL,
+    false_positive_rate REAL,
+    stale_news_rate REAL,
+    score_json TEXT,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source, window_days)
+);
 """
 
 

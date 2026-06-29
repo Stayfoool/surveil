@@ -1,0 +1,13 @@
+[Unit]
+Description=Surveil investment signal extraction
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/signals_extract.py --days 14
+StandardOutput=append:/opt/surveil/logs/signals-extract.log
+StandardError=append:/opt/surveil/logs/signals-extract.err.log

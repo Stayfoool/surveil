@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Surveil investment signal extraction every 10 minutes
+
+[Timer]
+OnBootSec=8min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=surveil-signals-extract.service
+
+[Install]
+WantedBy=timers.target

@@ -204,6 +204,24 @@ just remote-revision
 
 `just status-strict` exits non-zero when the local tree is dirty, local `HEAD` differs from `origin/main`, or the server deployed commit differs from GitHub.
 
+## Signal Outcome Loop
+
+MarketPulseWire can turn high-importance alerts into traceable signal records for later review:
+
+- `signals`: one extracted research signal
+- `signal_targets`: affected holdings, mapped stocks, or industry links
+- `signal_evidence`: source snippets and follow-up checkpoints
+- `signal_outcomes`: post-event price reaction metrics
+
+Manual commands:
+
+```bash
+python scripts/signals_extract.py --days 14
+python scripts/signal_outcome_update.py --days 45
+```
+
+The outcome updater currently backfills A-share targets through iFinD history quotes when iFinD credentials are configured. It records unsupported markets or missing quote data explicitly instead of inventing results. JYGS action/prediction tables are not part of this loop.
+
 ## PR Automation
 
 This repository uses GitHub Actions and Dependabot for low-risk PR automation:
