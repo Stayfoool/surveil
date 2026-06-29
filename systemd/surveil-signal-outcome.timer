@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Surveil investment signal outcome backfill after A-share close
+
+[Timer]
+OnCalendar=Mon..Fri 16:20:00
+Persistent=true
+Unit=surveil-signal-outcome.service
+
+[Install]
+WantedBy=timers.target

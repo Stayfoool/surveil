@@ -8,6 +8,12 @@ test:
     python3 scripts/test_trendforce_page_monitor.py
     python3 scripts/test_link_enrichment.py
     python3 scripts/test_sina_stock_news.py
+    python3 scripts/test_china_finance_media_monitor.py
+    python3 scripts/test_rss_monitor_fetch.py
+    python3 scripts/test_sina_zy_client.py
+    python3 scripts/test_time_utils.py
+    python3 scripts/test_x_stream_health.py
+    python3 scripts/test_signals_extract.py
     python3 scripts/scan_secrets.py
 
 status:

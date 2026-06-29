@@ -48,6 +48,8 @@ systemctl enable --now surveil-sina-stock-news.timer
 systemctl enable --now surveil-overseas-media.timer
 systemctl enable --now surveil-china-media.timer
 systemctl enable --now surveil-article-daily.timer
+systemctl enable --now surveil-signals-extract.timer
+systemctl enable --now surveil-signal-outcome.timer
 systemctl enable --now surveil-rss-monitor.service
 systemctl enable --now surveil-trendforce-page-monitor.service
 if grep -Eq '^(IFIND_RESEARCH_FORMULA|IFIND_REPORT_FORMULA|IFIND_RESEARCH_REPORTNAME|IFIND_REPORT_REPORTNAME|IFIND_RESEARCH_REPORT_TYPE|IFIND_REPORT_REPORT_TYPE)=[^[:space:]]+' '$REMOTE_DIR/.env' 2>/dev/null; then
@@ -56,7 +58,12 @@ else
   systemctl disable --now surveil-ifind-report.timer >/dev/null 2>&1 || true
   echo 'iFinD 研报配置为空，保持 surveil-ifind-report.timer 停用。'
 fi
-systemctl enable --now surveil-jygs-actions.timer
+if grep -Eq '^ENABLE_JYGS_TIMER=1$' '$REMOTE_DIR/.env' 2>/dev/null; then
+  systemctl enable --now surveil-jygs-actions.timer
+else
+  systemctl disable --now surveil-jygs-actions.timer >/dev/null 2>&1 || true
+  echo '韭研公社异动模块当前默认搁置；如需启用，请在 .env 设置 ENABLE_JYGS_TIMER=1。'
+fi
 systemctl enable --now surveil-holdings-web.service
 systemctl enable surveil-sina-flash.service
 systemctl restart surveil-sina-flash.service
@@ -72,5 +79,5 @@ systemctl --no-pager --full status surveil-holdings-web.service || true
 systemctl --no-pager --full status surveil-rss-monitor.service || true
 systemctl --no-pager --full status surveil-trendforce-page-monitor.service || true
 systemctl --no-pager --full status surveil-x-stream.service || true
-echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、中国财经媒体、RSS/TrendForce/海外媒体、文章日报、韭研公社定时器、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
+echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、中国财经媒体、RSS/TrendForce/海外媒体、文章日报、信号抽取/复盘、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
 "
