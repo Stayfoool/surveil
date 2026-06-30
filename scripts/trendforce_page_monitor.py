@@ -30,6 +30,7 @@ from http_utils import http_get
 from llm_analysis import llm_config
 from rss_monitor import connect_db, fetch_article_body, parse_date, strip_tags
 from source_health import record_source_failure, record_source_success
+from skeptic_evaluator import apply_skeptic_review
 from trendforce_sources import PageSource, TREND_FORCE_PAGE_SOURCES, is_focus_item
 from x_check import load_env
 
@@ -352,6 +353,13 @@ def notify_item(item: dict) -> None:
                 print(f"{enriched.get('page_source') or PAGE_SOURCE_KEY} 文章门控失败：{exc}", flush=True)
                 review = failed_review(enriched, exc)
             with connect_db() as conn:
+                review = apply_skeptic_review(
+                    conn,
+                    source=PAGE_SOURCE_KEY,
+                    item=enriched,
+                    review=review,
+                    push_key="push_now",
+                )
                 save_article_review(conn, PAGE_SOURCE_KEY, enriched, review)
         print(
             f"{enriched.get('page_source') or PAGE_SOURCE_KEY} 文章门控：importance={review.get('importance')} "

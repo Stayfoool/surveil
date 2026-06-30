@@ -45,6 +45,7 @@ from official_news_gate import (
     review_official_news,
     save_review,
 )
+from skeptic_evaluator import apply_skeptic_review
 from trendforce_sources import DEFAULT_RSS_FEEDS
 from x_check import load_env
 from source_health import record_source_failure, record_source_success
@@ -378,6 +379,7 @@ def notify_item(source: str, item: dict) -> None:
                 print(f"{source} 文章门控失败：{exc}", flush=True)
                 review = failed_review(item, exc)
             with connect_db() as conn:
+                review = apply_skeptic_review(conn, source=source, item=item, review=review, push_key="push_now")
                 save_article_review(conn, source, item, review)
         print(
             f"{source} 文章门控：importance={review.get('importance')} "
@@ -415,6 +417,13 @@ def handle_official_news_item(source: str, item: dict) -> None:
     else:
         review = review_official_news(source, enriched)
         with connect_db() as conn:
+            review = apply_skeptic_review(
+                conn,
+                source=source,
+                item=enriched,
+                review=review,
+                push_key="should_push_now",
+            )
             save_review(conn, source, enriched, review)
 
     print(

@@ -51,6 +51,18 @@ SETTING_GROUPS: list[dict[str, Any]] = [
         ],
     },
     {
+        "id": "skeptic",
+        "title": "Skeptic Evaluator",
+        "restart_hint": "保存后建议重启 RSS/TrendForce/中国财经媒体/X stream 等分析服务，使二次复核配置立即生效。",
+        "fields": [
+            SettingField("SKEPTIC_EVALUATOR_ENABLED", "启用二次复核", "skeptic", placeholder="1"),
+            SettingField("SKEPTIC_STALE_NEWS_DAYS", "旧闻天数阈值", "skeptic", placeholder="7"),
+            SettingField("SKEPTIC_DUPLICATE_LOOKBACK_DAYS", "重复查找天数", "skeptic", placeholder="14"),
+            SettingField("LLM_SKEPTIC_THINKING_TYPE", "Skeptic thinking", "skeptic", placeholder="enabled"),
+            SettingField("LLM_SKEPTIC_MAX_OUTPUT_TOKENS", "Skeptic 输出 tokens", "skeptic", placeholder="1200"),
+        ],
+    },
+    {
         "id": "x",
         "title": "X / Serenity",
         "restart_hint": "保存后建议重启 surveil-x-stream.service，使 X stream 立即使用新 token。",

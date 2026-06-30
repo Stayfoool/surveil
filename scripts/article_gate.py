@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from llm_analysis import call_chat_completion_with_prompts, llm_config
+from skeptic_evaluator import skeptic_lines
 
 
 GATE_SYSTEM_PROMPT = """你是半导体、AI 基础设施和二级市场研究助理。
@@ -271,4 +272,5 @@ def gate_lines(review: dict[str, Any]) -> list[str]:
         lines.append("门控涉及标的/环节：" + "；".join(str(item) for item in targets[:5]))
     if review.get("reason"):
         lines.append(f"门控理由：{review['reason']}")
+    lines.extend(skeptic_lines(review))
     return lines

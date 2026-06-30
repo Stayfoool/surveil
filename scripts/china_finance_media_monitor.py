@@ -45,6 +45,7 @@ from llm_analysis import llm_config
 from media_keyword_config import is_media_focus_item
 from rss_monitor import DB_PATH, fetch_article_body, parse_date, strip_tags
 from source_health import record_source_failure, record_source_success
+from skeptic_evaluator import apply_skeptic_review
 from time_utils import parse_datetime_to_utc_iso, timestamp_to_utc_iso
 
 
@@ -484,6 +485,13 @@ def notify_item(source: str, item: dict[str, Any]) -> None:
                 print(f"{source} 文章门控失败：{exc}", flush=True)
                 review = failed_review(enriched, exc)
             with connect_db() as conn:
+                review = apply_skeptic_review(
+                    conn,
+                    source=source,
+                    item=enriched,
+                    review=review,
+                    push_key="push_now",
+                )
                 save_article_review(conn, source, enriched, review)
         print(
             f"{source} 文章门控：importance={review.get('importance')} push={review.get('push_now')} title={enriched.get('title', '')}",

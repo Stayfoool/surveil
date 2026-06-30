@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from llm_analysis import call_chat_completion_with_prompts, format_llm_analysis, llm_config
+from skeptic_evaluator import skeptic_lines
 
 
 OFFICIAL_NEWS_SOURCES = {
@@ -124,7 +125,7 @@ def review_exists(conn: sqlite3.Connection, source: str, item_id: str) -> dict[s
         return None
     importance, should_push_now, reason, daily_summary, analysis_json, pushed_at = row
     parsed = json.loads(analysis_json)
-    return {
+    review = {
         "importance": importance,
         "should_push_now": bool(should_push_now),
         "reason": reason or "",
@@ -132,11 +133,20 @@ def review_exists(conn: sqlite3.Connection, source: str, item_id: str) -> dict[s
         "analysis": parsed,
         "pushed_at": pushed_at or "",
     }
+    if isinstance(parsed, dict) and isinstance(parsed.get("_skeptic"), dict):
+        review["skeptic"] = parsed["_skeptic"]
+        review["pre_skeptic_importance"] = parsed.get("_pre_skeptic_importance", "")
+    return review
 
 
 def save_review(conn: sqlite3.Connection, source: str, item: dict[str, Any], review: dict[str, Any]) -> None:
     ensure_official_news_table(conn)
     now = datetime.now(timezone.utc).isoformat()
+    analysis_payload = review.get("analysis") if isinstance(review.get("analysis"), dict) else dict(review)
+    analysis_payload = dict(analysis_payload)
+    if review.get("skeptic"):
+        analysis_payload["_skeptic"] = review["skeptic"]
+        analysis_payload["_pre_skeptic_importance"] = review.get("pre_skeptic_importance", "")
     conn.execute(
         """
         INSERT INTO official_news_reviews (
@@ -160,7 +170,7 @@ def save_review(conn: sqlite3.Connection, source: str, item: dict[str, Any], rev
             1 if review.get("should_push_now") else 0,
             str(review.get("reason") or ""),
             str(review.get("daily_summary") or ""),
-            json.dumps(review.get("analysis") or review, ensure_ascii=False),
+            json.dumps(analysis_payload, ensure_ascii=False),
             "",
             now,
         ),
@@ -227,4 +237,5 @@ def analysis_lines_from_review(review: dict[str, Any]) -> list[str]:
     reason = str(review.get("reason") or "").strip()
     if reason:
         prefix.append(f"分流理由：{reason}")
+    prefix.extend(skeptic_lines(review))
     return [lines[0], *prefix, *lines[1:]]

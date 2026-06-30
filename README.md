@@ -251,6 +251,20 @@ python scripts/stock_relations.py --config config/stock_relations.json
 
 `config/stock_relations.json` is gitignored. Use it for personal holdings, supply-chain links, competitors, customers, upstream/downstream names, and theme mappings that should not be published. Mappings can be triggered by direct symbols as well as exact theme/name matches or sufficiently specific title/body context. The Web workbench also provides JSON import/export, diff checks, recent signal backfill, and a pending suggestion queue for future LLM- or analyst-derived mapping ideas.
 
+### Skeptic Evaluator
+
+High-importance article and official-news candidates pass through a second-stage skeptic before immediate Feishu delivery. The skeptic checks local history and, when LLM credentials are available, asks a dedicated evaluator to look for stale news, repeated coverage, priced-in risk, weak hard variables, or over-extended stock linkage. `downgrade` candidates go to the daily digest instead of immediate push; `block` candidates are marked low importance.
+
+Useful settings:
+
+```bash
+SKEPTIC_EVALUATOR_ENABLED=1
+SKEPTIC_STALE_NEWS_DAYS=7
+SKEPTIC_DUPLICATE_LOOKBACK_DAYS=14
+LLM_SKEPTIC_THINKING_TYPE=enabled
+LLM_SKEPTIC_MAX_OUTPUT_TOKENS=1200
+```
+
 ## PR Automation
 
 This repository uses GitHub Actions and Dependabot for low-risk PR automation:
