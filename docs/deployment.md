@@ -29,6 +29,8 @@ cp config/stock_relations.example.json config/stock_relations.json
 python scripts/market_db.py
 ```
 
+Relationship mappings can also be created and edited later from the Web workbench's `关系映射` tab. The SQLite database is the live source; `config/stock_relations.json` is a gitignored private seed/backup snapshot.
+
 Edit `.env`, then run individual components:
 
 ```bash

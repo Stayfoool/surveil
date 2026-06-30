@@ -10,6 +10,7 @@
       "theme": "光模块/CPO/AI 数据中心",
       "reason": "NVIDIA AI 集群资本开支和网络架构升级通常会传导到高速光模块链。",
       "confidence": "中",
+      "relation_strength": "3",
       "source": "example",
       "enabled": false
     },
@@ -23,6 +24,22 @@
       "theme": "存储/设备",
       "reason": "存储厂商资本开支上行可能映射到半导体设备链，实际影响需结合订单和客户结构验证。",
       "confidence": "低",
+      "relation_strength": "2",
+      "valid_to": "",
+      "source": "example",
+      "enabled": false
+    },
+    {
+      "symbol": "人造钻石散热",
+      "symbol_name": "人造钻石散热",
+      "related_symbol": "300179.SZ",
+      "related_name": "四方达",
+      "relation_type": "thermal material theme",
+      "impact_direction": "positive",
+      "theme": "芯片散热/先进封装",
+      "reason": "新闻标题、主题或正文命中“人造钻石散热”时，可映射到相关热管理材料公司；实际影响需结合订单、产能和客户验证。",
+      "confidence": "低",
+      "relation_strength": "2",
       "source": "example",
       "enabled": false
     }

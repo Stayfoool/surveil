@@ -198,11 +198,38 @@ CREATE TABLE IF NOT EXISTS stock_relations (
     theme TEXT,
     reason TEXT,
     confidence TEXT,
+    relation_strength TEXT,
+    valid_from TEXT,
+    valid_to TEXT,
+    last_review_verdict TEXT,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    miss_count INTEGER NOT NULL DEFAULT 0,
     source TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     raw_json TEXT,
     updated_at TEXT NOT NULL,
     UNIQUE(symbol, related_symbol, relation_type)
+);
+
+CREATE TABLE IF NOT EXISTS relation_suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_table TEXT,
+    source_id TEXT,
+    symbol TEXT NOT NULL,
+    symbol_name TEXT,
+    related_symbol TEXT NOT NULL,
+    related_name TEXT,
+    relation_type TEXT NOT NULL,
+    impact_direction TEXT,
+    theme TEXT,
+    reason TEXT,
+    confidence TEXT,
+    source TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    raw_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    reviewed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS signals (
@@ -351,6 +378,12 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         "related_name": "TEXT",
         "impact_direction": "TEXT",
         "theme": "TEXT",
+        "relation_strength": "TEXT",
+        "valid_from": "TEXT",
+        "valid_to": "TEXT",
+        "last_review_verdict": "TEXT",
+        "hit_count": "INTEGER NOT NULL DEFAULT 0",
+        "miss_count": "INTEGER NOT NULL DEFAULT 0",
         "enabled": "INTEGER NOT NULL DEFAULT 1",
         "raw_json": "TEXT",
     }
@@ -360,6 +393,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "signal_reviews", "symbol", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_symbol ON stock_relations(symbol, enabled)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_related ON stock_relations(related_symbol, enabled)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relation_suggestions_status ON relation_suggestions(status, updated_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal ON signal_reviews(signal_id, review_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_symbol ON signal_reviews(symbol, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_created ON signal_reviews(created_at)")
