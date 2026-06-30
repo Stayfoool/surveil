@@ -44,12 +44,15 @@ SERVICE_UNITS = [
     "surveil-sina-flash.service",
     "surveil-holdings-web.service",
     "surveil-proxy.service",
+    "surveil-stock-relations-import.service",
 ]
 
 TIMER_UNITS = [
     "surveil-sina-stock-news.timer",
     "surveil-overseas-media.timer",
     "surveil-article-daily.timer",
+    "surveil-signal-review.timer",
+    "surveil-signal-digest.timer",
     "surveil-ifind-notice.timer",
     "surveil-ifind-report.timer",
     "surveil-jygs-actions.timer",
@@ -65,6 +68,9 @@ LOG_FILES = [
     "ifind-notice.err.log",
     "jygs-actions.err.log",
     "holdings-web.err.log",
+    "signal-review.err.log",
+    "signal-digest.err.log",
+    "stock-relations-import.err.log",
 ]
 
 
@@ -319,6 +325,185 @@ def fetch_events_rows(day: str = "", source: str = "", kind: str = "", q: str = 
     return rows[: max(1, min(limit, 300))]
 
 
+def fetch_signal_rows(
+    *,
+    q: str = "",
+    source: str = "",
+    symbol: str = "",
+    verdict: str = "",
+    importance: str = "",
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    q_lower = q.strip().lower()
+    source_lower = source.strip().lower()
+    symbol_upper = symbol.strip().upper()
+    verdict_lower = verdict.strip().lower()
+    importance_lower = importance.strip().lower()
+    rows: list[dict[str, Any]] = []
+    with connect_sqlite(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if not table_exists(conn, "signals"):
+            return []
+        for row in conn.execute(
+            """
+            WITH latest_outcome AS (
+                SELECT signal_id, symbol, MAX(as_of_date) AS as_of_date
+                FROM signal_outcomes
+                GROUP BY signal_id, symbol
+            ), latest_review AS (
+                SELECT signal_id, COALESCE(symbol, '') AS symbol, MAX(id) AS review_id
+                FROM signal_reviews
+                GROUP BY signal_id, COALESCE(symbol, '')
+            )
+            SELECT s.id, s.source, s.title, s.url, s.published_at, s.created_at,
+                   s.importance, s.incremental_classification, s.direction,
+                   s.confidence, s.thesis,
+                   t.symbol, t.name, t.target_role, t.relation_type, t.relation_reason,
+                   t.expected_direction, t.confidence AS target_confidence,
+                   o.as_of_date, o.return_1d, o.return_3d, o.return_5d, o.return_10d,
+                   o.return_20d, o.max_drawdown, o.max_runup, o.volume_change,
+                   o.outcome_status,
+                   r.verdict, r.error_type, r.review_text, r.lessons_json, r.created_at AS reviewed_at
+            FROM signals s
+            LEFT JOIN signal_targets t ON t.signal_id = s.id
+            LEFT JOIN latest_outcome lo ON lo.signal_id = s.id AND lo.symbol = t.symbol
+            LEFT JOIN signal_outcomes o
+              ON o.signal_id = lo.signal_id AND o.symbol = lo.symbol AND o.as_of_date = lo.as_of_date
+            LEFT JOIN latest_review lr ON lr.signal_id = s.id AND lr.symbol = COALESCE(t.symbol, '')
+            LEFT JOIN signal_reviews r ON r.id = lr.review_id
+            ORDER BY s.created_at DESC, s.id DESC
+            LIMIT 600
+            """
+        ):
+            item = {
+                "id": row["id"],
+                "source": row["source"] or "",
+                "title": row["title"] or "",
+                "url": row["url"] or "",
+                "published_at": normalize_time(row["published_at"]),
+                "created_at": normalize_time(row["created_at"]),
+                "importance": row["importance"] or "",
+                "incremental_classification": row["incremental_classification"] or "",
+                "direction": row["direction"] or "",
+                "confidence": row["confidence"] or "",
+                "thesis": row["thesis"] or "",
+                "symbol": row["symbol"] or "",
+                "name": row["name"] or "",
+                "target_role": row["target_role"] or "",
+                "relation_type": row["relation_type"] or "",
+                "relation_reason": row["relation_reason"] or "",
+                "expected_direction": row["expected_direction"] or "",
+                "target_confidence": row["target_confidence"] or "",
+                "as_of_date": row["as_of_date"] or "",
+                "returns": {
+                    "1d": row["return_1d"],
+                    "3d": row["return_3d"],
+                    "5d": row["return_5d"],
+                    "10d": row["return_10d"],
+                    "20d": row["return_20d"],
+                },
+                "max_drawdown": row["max_drawdown"],
+                "max_runup": row["max_runup"],
+                "volume_change": row["volume_change"],
+                "outcome_status": row["outcome_status"] or "",
+                "verdict": row["verdict"] or "",
+                "error_type": row["error_type"] or "",
+                "review_text": row["review_text"] or "",
+                "lessons_json": row["lessons_json"] or "",
+                "reviewed_at": normalize_time(row["reviewed_at"]),
+            }
+            hay = json.dumps(item, ensure_ascii=False).lower()
+            if q_lower and q_lower not in hay:
+                continue
+            if source_lower and source_lower not in str(item["source"]).lower():
+                continue
+            if symbol_upper and symbol_upper not in str(item["symbol"]).upper() and symbol_upper not in str(item["name"]).upper():
+                continue
+            if verdict_lower and verdict_lower != str(item["verdict"]).lower():
+                continue
+            if importance_lower and importance_lower != str(item["importance"]).lower():
+                continue
+            rows.append(item)
+            if len(rows) >= max(1, min(limit, 300)):
+                break
+    return rows
+
+
+def fetch_signal_summary() -> dict[str, Any]:
+    with connect_sqlite(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cards = [
+            {"label": "信号", "value": count_rows(conn, "signals")},
+            {"label": "影响标的", "value": count_rows(conn, "signal_targets")},
+            {"label": "行情结果", "value": count_rows(conn, "signal_outcomes")},
+            {"label": "自动复盘", "value": count_rows(conn, "signal_reviews")},
+            {"label": "关系映射", "value": count_rows(conn, "stock_relations", "enabled = 1")},
+        ]
+        verdicts = grouped_counts(conn, "signal_reviews", "verdict", "1=1", ())
+        source_scores: list[dict[str, Any]] = []
+        if table_exists(conn, "source_scores"):
+            for row in conn.execute(
+                """
+                SELECT source, window_days, signal_count, hit_rate, false_positive_rate,
+                       avg_excess_return, updated_at
+                FROM source_scores
+                WHERE window_days = 30
+                ORDER BY signal_count DESC, hit_rate DESC
+                LIMIT 12
+                """
+            ):
+                source_scores.append(
+                    {
+                        "source": row["source"] or "",
+                        "window_days": row["window_days"],
+                        "signal_count": row["signal_count"],
+                        "hit_rate": row["hit_rate"],
+                        "false_positive_rate": row["false_positive_rate"],
+                        "avg_excess_return": row["avg_excess_return"],
+                        "updated_at": row["updated_at"] or "",
+                    }
+                )
+    return {"cards": cards, "verdicts": verdicts, "source_scores": source_scores}
+
+
+def fetch_relation_rows(q: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    q_lower = q.strip().lower()
+    rows: list[dict[str, Any]] = []
+    with connect_sqlite(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if not table_exists(conn, "stock_relations"):
+            return []
+        for row in conn.execute(
+            """
+            SELECT symbol, symbol_name, related_symbol, related_name, relation_type,
+                   impact_direction, theme, reason, confidence, source, enabled, updated_at
+            FROM stock_relations
+            ORDER BY enabled DESC, updated_at DESC
+            LIMIT 300
+            """
+        ):
+            item = {
+                "symbol": row["symbol"] or "",
+                "symbol_name": row["symbol_name"] or "",
+                "related_symbol": row["related_symbol"] or "",
+                "related_name": row["related_name"] or "",
+                "relation_type": row["relation_type"] or "",
+                "impact_direction": row["impact_direction"] or "",
+                "theme": row["theme"] or "",
+                "reason": row["reason"] or "",
+                "confidence": row["confidence"] or "",
+                "source": row["source"] or "",
+                "enabled": bool(row["enabled"]),
+                "updated_at": row["updated_at"] or "",
+            }
+            if q_lower and q_lower not in json.dumps(item, ensure_ascii=False).lower():
+                continue
+            rows.append(item)
+            if len(rows) >= max(1, min(limit, 300)):
+                break
+    return rows
+
+
 def overview_payload(day: str = "") -> dict[str, Any]:
     start_utc, end_utc, display_day = utc_window_for_day(day)
     with connect_sqlite(DEFAULT_DB_PATH) as conn:
@@ -561,6 +746,7 @@ def html_page(token_required: bool) -> str:
   <nav class="tabs">
     <button id="tab-overview" onclick="showView('overview')">今日总览</button>
     <button id="tab-events" onclick="showView('events')">事件中心</button>
+    <button id="tab-signals" onclick="showView('signals')">信号复盘</button>
     <button id="tab-health" onclick="showView('health')">任务健康</button>
     <button id="tab-keywords" onclick="showView('keywords')">媒体关键词</button>
     <button id="tab-settings" onclick="showView('settings')">配置中心</button>
@@ -608,6 +794,76 @@ def html_page(token_required: bool) -> str:
           </table>
         </div>
       </section>
+    </section>
+
+    <section id="view-signals" class="view">
+      <div class="section-title">
+        <h2>信号复盘</h2>
+        <button onclick="loadSignals()">刷新</button>
+      </div>
+      <div id="signalMetrics" class="metric-grid"></div>
+      <div class="toolbar">
+        <input id="signalSource" placeholder="来源" style="width:160px">
+        <input id="signalSymbol" placeholder="代码/名称" style="width:160px">
+        <select id="signalVerdict" style="width:150px">
+          <option value="">全部结论</option>
+          <option value="hit">hit</option>
+          <option value="partial">partial</option>
+          <option value="miss">miss</option>
+          <option value="too_early">too_early</option>
+          <option value="unverifiable">unverifiable</option>
+        </select>
+        <select id="signalImportance" style="width:150px">
+          <option value="">全部重要性</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <input id="signalQuery" placeholder="搜索标题、原因、复盘" style="width:260px">
+        <button class="primary" onclick="loadSignals()">查询</button>
+      </div>
+      <section class="panel">
+        <div class="table-wrap">
+          <table class="events-table">
+            <thead>
+              <tr>
+                <th style="width:90px">结论</th>
+                <th style="width:130px">标的</th>
+                <th style="width:130px">收益</th>
+                <th>信号/复盘</th>
+                <th style="width:120px">来源</th>
+                <th style="width:120px">关系</th>
+              </tr>
+            </thead>
+            <tbody id="signalRows"></tbody>
+          </table>
+        </div>
+      </section>
+      <div class="split" style="margin-top:12px">
+        <section class="panel">
+          <div class="list" id="signalSourceScores"></div>
+        </section>
+        <section class="panel">
+          <div class="list-row" style="padding:10px 12px"><strong>产业链/关联关系</strong></div>
+          <div class="toolbar" style="padding:0 12px 10px">
+            <input id="relationQuery" placeholder="搜索关系、主题、股票" style="width:260px">
+            <button onclick="loadRelations()">查询</button>
+          </div>
+          <div class="table-wrap" style="max-height:360px">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:120px">触发</th>
+                  <th style="width:120px">映射</th>
+                  <th style="width:120px">方向</th>
+                  <th>原因</th>
+                </tr>
+              </thead>
+              <tbody id="relationRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </section>
 
     <section id="view-health" class="view">
@@ -846,10 +1102,25 @@ function showView(name) {{
   document.getElementById(`tab-${{name}}`).classList.add('active');
   if (name === 'overview') loadOverview();
   if (name === 'events') loadEvents();
+  if (name === 'signals') loadSignals();
   if (name === 'health') loadHealth();
   if (name === 'keywords') loadKeywords();
   if (name === 'settings') loadSettings();
   if (name === 'holdings' && !loadedHoldings) reloadData();
+}}
+
+function formatPct(value) {{
+  if (value === null || value === undefined || value === '') return '-';
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value);
+  return `${{num.toFixed(2)}}%`;
+}}
+
+function formatRate(value) {{
+  if (value === null || value === undefined || value === '') return '-';
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value);
+  return `${{(num * 100).toFixed(0)}}%`;
 }}
 
 async function loadOverview() {{
@@ -905,6 +1176,81 @@ async function loadEvents() {{
         <td>${{escapeHtml(item.delivery_status || '')}}${{item.push ? '<div class="hint">push</div>' : ''}}</td>
       </tr>
     `).join('') || '<tr><td colspan="6">没有匹配事件。</td></tr>';
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function loadSignals() {{
+  try {{
+    const params = new URLSearchParams();
+    const source = document.getElementById('signalSource').value.trim();
+    const symbol = document.getElementById('signalSymbol').value.trim();
+    const verdict = document.getElementById('signalVerdict').value.trim();
+    const importance = document.getElementById('signalImportance').value.trim();
+    const q = document.getElementById('signalQuery').value.trim();
+    if (source) params.set('source', source);
+    if (symbol) params.set('symbol', symbol);
+    if (verdict) params.set('verdict', verdict);
+    if (importance) params.set('importance', importance);
+    if (q) params.set('q', q);
+    const data = await api('/api/signals?' + params.toString());
+    document.getElementById('signalMetrics').innerHTML = ((data.summary || {{}}).cards || []).map(item => `
+      <div class="metric">
+        <div class="label">${{escapeHtml(item.label)}}</div>
+        <div class="value">${{escapeHtml(item.value)}}</div>
+      </div>
+    `).join('');
+    document.getElementById('signalRows').innerHTML = (data.signals || []).map(item => {{
+      const returns = item.returns || {{}};
+      const returnText = [`1d ${{formatPct(returns['1d'])}}`, `3d ${{formatPct(returns['3d'])}}`, `5d ${{formatPct(returns['5d'])}}`].join('<br>');
+      const title = item.url ? `<a href="${{escapeHtml(item.url)}}" target="_blank" rel="noreferrer">${{escapeHtml(item.title || '')}}</a>` : escapeHtml(item.title || '');
+      return `
+        <tr>
+          <td>${{badge(item.verdict || item.outcome_status || '-')}}<div class="hint">${{escapeHtml(item.error_type || '')}}</div></td>
+          <td><strong>${{escapeHtml(item.symbol || item.name || '-')}}</strong><div class="hint">${{escapeHtml(item.name || '')}}</div></td>
+          <td>${{returnText}}<div class="hint">runup ${{formatPct(item.max_runup)}} / dd ${{formatPct(item.max_drawdown)}}</div></td>
+          <td class="summary-cell">
+            <div><strong>${{title}}</strong></div>
+            <div>${{escapeHtml(shortText(item.thesis || '', 180))}}</div>
+            <div class="hint">${{escapeHtml(shortText(item.review_text || '', 220))}}</div>
+          </td>
+          <td>${{escapeHtml(item.source || '')}}<div>${{badge(item.importance || '')}}</div><div class="hint">${{formatTime(item.created_at)}}</div></td>
+          <td>${{escapeHtml(item.target_role || '')}}<div class="hint">${{escapeHtml(shortText(item.relation_type || item.relation_reason || '', 120))}}</div></td>
+        </tr>
+      `;
+    }}).join('') || '<tr><td colspan="6">没有匹配信号。</td></tr>';
+    const scores = ((data.summary || {{}}).source_scores || []);
+    document.getElementById('signalSourceScores').innerHTML = ['<div class="list-row"><strong>来源评分（近 30 日）</strong></div>', ...scores.map(item => `
+      <div class="list-row">
+        <strong>${{escapeHtml(item.source || '')}}</strong>
+        <span class="summary">样本 ${{item.signal_count}} / 命中 ${{formatRate(item.hit_rate)}} / 未兑现 ${{formatRate(item.false_positive_rate)}}</span>
+        <div class="hint">平均方向收益：${{escapeHtml(item.avg_excess_return ?? '-')}}</div>
+      </div>
+    `)].join('');
+    await loadRelations();
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function loadRelations() {{
+  try {{
+    const params = new URLSearchParams();
+    const q = document.getElementById('relationQuery') ? document.getElementById('relationQuery').value.trim() : '';
+    if (q) params.set('q', q);
+    const data = await api('/api/signal-relations?' + params.toString());
+    document.getElementById('relationRows').innerHTML = (data.relations || []).map(item => `
+      <tr>
+        <td><strong>${{escapeHtml(item.symbol || '')}}</strong><div class="hint">${{escapeHtml(item.symbol_name || '')}}</div></td>
+        <td><strong>${{escapeHtml(item.related_symbol || '')}}</strong><div class="hint">${{escapeHtml(item.related_name || '')}}</div></td>
+        <td>${{badge(item.impact_direction || '')}}<div class="hint">${{escapeHtml(item.confidence || '')}}</div></td>
+        <td class="summary-cell">
+          <div>${{escapeHtml(item.relation_type || '')}} / ${{escapeHtml(item.theme || '')}}</div>
+          <div class="hint">${{escapeHtml(shortText(item.reason || '', 180))}}</div>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="4">暂无关系配置。可复制 config/stock_relations.example.json 为私有 config/stock_relations.json 后导入。</td></tr>';
   }} catch (err) {{
     showStatus(err.message, 'err');
   }}
@@ -1318,6 +1664,52 @@ class HoldingsHandler(BaseHTTPRequestHandler):
                     limit=limit,
                 )
                 self.send_json({"ok": True, "events": events})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if parsed.path == "/api/signals":
+            if not self.require_auth():
+                return
+            try:
+                qs = parse_qs(parsed.query)
+                limit_raw = (qs.get("limit") or ["100"])[0]
+                try:
+                    limit = int(limit_raw)
+                except ValueError:
+                    limit = 100
+                self.send_json(
+                    {
+                        "ok": True,
+                        "summary": fetch_signal_summary(),
+                        "signals": fetch_signal_rows(
+                            q=(qs.get("q") or [""])[0],
+                            source=(qs.get("source") or [""])[0],
+                            symbol=(qs.get("symbol") or [""])[0],
+                            verdict=(qs.get("verdict") or [""])[0],
+                            importance=(qs.get("importance") or [""])[0],
+                            limit=limit,
+                        ),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if parsed.path == "/api/signal-relations":
+            if not self.require_auth():
+                return
+            try:
+                qs = parse_qs(parsed.query)
+                limit_raw = (qs.get("limit") or ["100"])[0]
+                try:
+                    limit = int(limit_raw)
+                except ValueError:
+                    limit = 100
+                self.send_json(
+                    {
+                        "ok": True,
+                        "relations": fetch_relation_rows(q=(qs.get("q") or [""])[0], limit=limit),
+                    }
+                )
             except Exception as exc:  # noqa: BLE001
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return

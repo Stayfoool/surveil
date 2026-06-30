@@ -1,0 +1,30 @@
+{
+  "relations": [
+    {
+      "symbol": "NVDA",
+      "symbol_name": "NVIDIA",
+      "related_symbol": "300308.SZ",
+      "related_name": "中际旭创",
+      "relation_type": "AI optical interconnect supply chain",
+      "impact_direction": "positive",
+      "theme": "光模块/CPO/AI 数据中心",
+      "reason": "NVIDIA AI 集群资本开支和网络架构升级通常会传导到高速光模块链。",
+      "confidence": "中",
+      "source": "example",
+      "enabled": false
+    },
+    {
+      "symbol": "MU",
+      "symbol_name": "Micron",
+      "related_symbol": "688012.SH",
+      "related_name": "中微公司",
+      "relation_type": "memory capex read-through",
+      "impact_direction": "positive",
+      "theme": "存储/设备",
+      "reason": "存储厂商资本开支上行可能映射到半导体设备链，实际影响需结合订单和客户结构验证。",
+      "confidence": "低",
+      "source": "example",
+      "enabled": false
+    }
+  ]
+}

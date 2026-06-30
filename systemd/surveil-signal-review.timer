@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Surveil investment signal automatic review after outcome backfill
+
+[Timer]
+OnCalendar=Mon..Fri 16:35:00
+Persistent=true
+Unit=surveil-signal-review.service
+
+[Install]
+WantedBy=timers.target

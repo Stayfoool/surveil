@@ -1,0 +1,13 @@
+[Unit]
+Description=Surveil signal review digest
+After=network-online.target surveil-db-init.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=surveil
+WorkingDirectory=/opt/surveil
+EnvironmentFile=-/opt/surveil/.env
+ExecStart=/opt/surveil/.venv/bin/python /opt/surveil/scripts/signal_digest.py --mode daily
+StandardOutput=append:/opt/surveil/logs/signal-digest.log
+StandardError=append:/opt/surveil/logs/signal-digest.err.log

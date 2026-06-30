@@ -24,6 +24,7 @@ from signal_store import (
     target_key,
     upsert_signal,
 )
+from stock_relations import related_targets_for_symbols
 
 
 IMPORTANT_LEVELS = {"high", "medium"}
@@ -261,6 +262,14 @@ def dedupe_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def expand_related_targets(conn: sqlite3.Connection, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    symbols = [normalize_symbol(str(target.get("symbol") or "")) for target in targets]
+    if not symbols or not table_exists(conn, "stock_relations"):
+        return targets
+    related = related_targets_for_symbols(conn, symbols, max_per_symbol=4)
+    return dedupe_targets([*targets, *related])
+
+
 def event_targets(
     conn: sqlite3.Connection,
     symbols_json: str | None,
@@ -405,7 +414,7 @@ def event_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[d
                     "observed_at": str(row["published_at"] or row["first_seen_at"] or ""),
                 }
             )
-    return signal, event_targets(conn, row["symbols_json"], analysis), evidence
+    return signal, expand_related_targets(conn, event_targets(conn, row["symbols_json"], analysis)), evidence
 
 
 def article_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]] | None:
@@ -462,7 +471,7 @@ def article_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple
             "observed_at": str(row["published_at"] or row["created_at"] or ""),
         }
     ]
-    return signal, dedupe_targets([target for target in targets if target]), evidence
+    return signal, expand_related_targets(conn, dedupe_targets([target for target in targets if target])), evidence
 
 
 def official_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]] | None:
@@ -508,7 +517,7 @@ def official_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tupl
             "observed_at": str(row["published_at"] or row["created_at"] or ""),
         }
     ]
-    return signal, targets, evidence
+    return signal, expand_related_targets(conn, targets), evidence
 
 
 def x_targets(conn: sqlite3.Connection, text: str) -> list[dict[str, Any]]:
@@ -588,7 +597,7 @@ def x_signal_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> tuple[dict[
             "observed_at": str(row["published_at"] or row["first_seen_at"] or ""),
         }
     ]
-    return signal, targets, evidence
+    return signal, expand_related_targets(conn, targets), evidence
 
 
 def latest_event_rows(conn: sqlite3.Connection, since: str) -> list[sqlite3.Row]:

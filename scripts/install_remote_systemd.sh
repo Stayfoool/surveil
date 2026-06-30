@@ -50,6 +50,10 @@ systemctl enable --now surveil-china-media.timer
 systemctl enable --now surveil-article-daily.timer
 systemctl enable --now surveil-signals-extract.timer
 systemctl enable --now surveil-signal-outcome.timer
+systemctl enable --now surveil-signal-review.timer
+systemctl enable --now surveil-signal-digest.timer
+systemctl enable surveil-stock-relations-import.service
+systemctl start surveil-stock-relations-import.service || true
 systemctl enable --now surveil-rss-monitor.service
 systemctl enable --now surveil-trendforce-page-monitor.service
 if grep -Eq '^(IFIND_RESEARCH_FORMULA|IFIND_REPORT_FORMULA|IFIND_RESEARCH_REPORTNAME|IFIND_REPORT_REPORTNAME|IFIND_RESEARCH_REPORT_TYPE|IFIND_REPORT_REPORT_TYPE)=[^[:space:]]+' '$REMOTE_DIR/.env' 2>/dev/null; then
@@ -79,5 +83,5 @@ systemctl --no-pager --full status surveil-holdings-web.service || true
 systemctl --no-pager --full status surveil-rss-monitor.service || true
 systemctl --no-pager --full status surveil-trendforce-page-monitor.service || true
 systemctl --no-pager --full status surveil-x-stream.service || true
-echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、中国财经媒体、RSS/TrendForce/海外媒体、文章日报、信号抽取/复盘、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
+echo '已安装 surveil-db-init.service，启用 iFinD 公告、Sina 个股新闻、中国财经媒体、RSS/TrendForce/海外媒体、文章日报、信号抽取/outcome/复盘/复盘日报、持仓 Web UI，并启动新浪快讯常驻服务。iFinD smoke test 可用：systemctl start surveil-ifind-smoke.service'
 "

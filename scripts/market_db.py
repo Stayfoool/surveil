@@ -190,11 +190,17 @@ CREATE TABLE IF NOT EXISTS prediction_reviews (
 CREATE TABLE IF NOT EXISTS stock_relations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol TEXT NOT NULL,
+    symbol_name TEXT,
     related_symbol TEXT NOT NULL,
+    related_name TEXT,
     relation_type TEXT NOT NULL,
+    impact_direction TEXT,
+    theme TEXT,
     reason TEXT,
     confidence TEXT,
     source TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    raw_json TEXT,
     updated_at TEXT NOT NULL,
     UNIQUE(symbol, related_symbol, relation_type)
 );
@@ -296,6 +302,8 @@ CREATE INDEX IF NOT EXISTS idx_signal_outcomes_symbol ON signal_outcomes(symbol,
 CREATE TABLE IF NOT EXISTS signal_reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_id INTEGER NOT NULL,
+    target_id INTEGER,
+    symbol TEXT,
     review_type TEXT NOT NULL,
     verdict TEXT,
     error_type TEXT,
@@ -303,8 +311,12 @@ CREATE TABLE IF NOT EXISTS signal_reviews (
     lessons_json TEXT,
     model TEXT,
     created_at TEXT NOT NULL,
-    FOREIGN KEY(signal_id) REFERENCES signals(id)
+    FOREIGN KEY(signal_id) REFERENCES signals(id),
+    FOREIGN KEY(target_id) REFERENCES signal_targets(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal ON signal_reviews(signal_id, review_type);
+CREATE INDEX IF NOT EXISTS idx_signal_reviews_created ON signal_reviews(created_at);
 
 CREATE TABLE IF NOT EXISTS source_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -323,10 +335,41 @@ CREATE TABLE IF NOT EXISTS source_scores (
 """
 
 
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    if column not in table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply additive migrations for existing personal SQLite databases."""
+    stock_relation_columns = {
+        "symbol_name": "TEXT",
+        "related_name": "TEXT",
+        "impact_direction": "TEXT",
+        "theme": "TEXT",
+        "enabled": "INTEGER NOT NULL DEFAULT 1",
+        "raw_json": "TEXT",
+    }
+    for column, definition in stock_relation_columns.items():
+        add_column_if_missing(conn, "stock_relations", column, definition)
+    add_column_if_missing(conn, "signal_reviews", "target_id", "INTEGER")
+    add_column_if_missing(conn, "signal_reviews", "symbol", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_symbol ON stock_relations(symbol, enabled)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_related ON stock_relations(related_symbol, enabled)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal ON signal_reviews(signal_id, review_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_symbol ON signal_reviews(symbol, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_created ON signal_reviews(created_at)")
+
+
 def init_db(path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_sqlite(path)
     conn.executescript(SCHEMA)
+    migrate_schema(conn)
     conn.commit()
     return conn
 

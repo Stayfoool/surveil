@@ -212,15 +212,28 @@ MarketPulseWire can turn high-importance alerts into traceable signal records fo
 - `signal_targets`: affected holdings, mapped stocks, or industry links
 - `signal_evidence`: source snippets and follow-up checkpoints
 - `signal_outcomes`: post-event price reaction metrics
+- `signal_reviews`: automatic hit/miss/partial/too-early reviews
+- `stock_relations`: optional private supply-chain/competitor/customer relation mappings
 
 Manual commands:
 
 ```bash
 python scripts/signals_extract.py --days 14
 python scripts/signal_outcome_update.py --days 45
+python scripts/signal_review.py --days 60
+python scripts/signal_digest.py --mode daily --dry-run
 ```
 
 The outcome updater currently backfills A-share targets through iFinD history quotes when iFinD credentials are configured. It records unsupported markets or missing quote data explicitly instead of inventing results. JYGS action/prediction tables are not part of this loop.
+
+To add private relationship mappings, copy the example file and import it:
+
+```bash
+cp config/stock_relations.example.json config/stock_relations.json
+python scripts/stock_relations.py --config config/stock_relations.json
+```
+
+`config/stock_relations.json` is gitignored. Use it for personal holdings, supply-chain links, competitors, customers, upstream/downstream names, and theme mappings that should not be published.
 
 ## PR Automation
 

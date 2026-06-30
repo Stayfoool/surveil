@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Surveil signal review digest at 20:35
+
+[Timer]
+OnCalendar=*-*-* 20:35:00
+Persistent=true
+Unit=surveil-signal-digest.service
+
+[Install]
+WantedBy=timers.target

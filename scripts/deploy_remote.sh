@@ -38,6 +38,7 @@ rsync -az --delete \
   --exclude 'proxy.env' \
   --exclude 'config/portfolio.json' \
   --exclude 'config/media_keywords.json' \
+  --exclude 'config/stock_relations.json' \
   --exclude '.venv' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \

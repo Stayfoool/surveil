@@ -13,6 +13,8 @@ from article_gate import ensure_article_reviews_table
 from market_db import init_db
 from official_news_gate import ensure_official_news_table
 from signal_outcome_update import compute_metrics, quote_rows_from_response, target_rows
+from signal_review import classify_review, review_signals
+from stock_relations import import_relations
 from signals_extract import extract_signals, target_from_text, x_targets
 
 
@@ -310,11 +312,107 @@ def test_outcome_target_rows_only_select_a_share_symbols() -> None:
         conn.close()
 
 
+def test_relation_import_expands_signal_targets() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        config_path = Path(tmpdir) / "relations.json"
+        seed_db(path)
+        config_path.write_text(
+            dumps(
+                {
+                    "relations": [
+                        {
+                            "symbol": "000725.SZ",
+                            "symbol_name": "京东方A",
+                            "related_symbol": "300567.SZ",
+                            "related_name": "精测电子",
+                            "relation_type": "设备供应链",
+                            "impact_direction": "positive",
+                            "reason": "面板/封装产线资本开支映射到检测设备。",
+                            "confidence": "中",
+                            "enabled": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        counts = import_relations(db_path=path, config_path=config_path)
+        assert counts["imported"] == 1
+        extract_signals(db_path=path, days=10, dry_run=False)
+        conn = init_db(path)
+        targets = conn.execute(
+            "SELECT symbol, name, target_role, relation_type FROM signal_targets ORDER BY symbol"
+        ).fetchall()
+        assert ("300567.SZ", "精测电子", "related_stock", "设备供应链") in targets
+        conn.close()
+
+
+def test_signal_review_classification_and_insert() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        seed_db(path)
+        extract_signals(db_path=path, days=10, dry_run=False)
+        conn = init_db(path)
+        signal_id, target_id = conn.execute(
+            """
+            SELECT s.id, t.id
+            FROM signals s JOIN signal_targets t ON t.signal_id = s.id
+            WHERE t.symbol = '000725.SZ'
+            ORDER BY s.id LIMIT 1
+            """
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO signal_outcomes (
+                signal_id, target_id, symbol, as_of_date, return_1d, return_3d,
+                return_5d, max_drawdown, max_runup, volume_change,
+                matched_direction, outcome_status, outcome_json, updated_at
+            ) VALUES (?, ?, '000725.SZ', '2026-06-30', 2.0, 4.5, 5.0, -1.0, 5.5, 80.0,
+                      'matched', 'partial_5d', '{}', ?)
+            """,
+            (signal_id, target_id, NOW),
+        )
+        conn.commit()
+        conn.close()
+        conn = init_db(path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT s.id AS signal_id, s.direction AS signal_direction,
+                   t.id AS target_id, t.symbol, t.name, t.expected_direction,
+                   o.as_of_date, o.return_1d, o.return_3d, o.return_5d, o.return_10d,
+                   o.return_20d, o.max_drawdown, o.max_runup, o.volume_change,
+                   o.outcome_status
+            FROM signal_outcomes o
+            JOIN signals s ON s.id = o.signal_id
+            JOIN signal_targets t ON t.id = o.target_id
+            WHERE o.signal_id = ? AND o.symbol = '000725.SZ'
+            """,
+            (signal_id,),
+        ).fetchone()
+        review = classify_review(row)
+        assert review["verdict"] == "hit"
+        conn.close()
+        counts = review_signals(db_path=path, days=10, dry_run=False)
+        assert counts["reviewed"] >= 1
+        conn = init_db(path)
+        stored = conn.execute(
+            "SELECT symbol, verdict, error_type FROM signal_reviews WHERE symbol='000725.SZ'"
+        ).fetchone()
+        assert stored == ("000725.SZ", "hit", "none")
+        score = conn.execute("SELECT signal_count, hit_rate FROM source_scores WHERE window_days=30").fetchone()
+        assert score is not None
+        conn.close()
+
+
 def main() -> int:
     test_extract_signals_from_existing_sources()
     test_outcome_metrics_from_ifind_like_response()
     test_bare_foreign_numeric_codes_do_not_become_a_share_symbols()
     test_outcome_target_rows_only_select_a_share_symbols()
+    test_relation_import_expands_signal_targets()
+    test_signal_review_classification_and_insert()
     print("signal extraction/outcome tests OK")
     return 0
 

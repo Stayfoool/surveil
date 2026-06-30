@@ -24,6 +24,8 @@ pip install -r requirements.txt
 cp .env.example .env
 cp config/portfolio.example.json config/portfolio.json
 cp config/media_keywords.example.json config/media_keywords.json
+# Optional private supply-chain/customer/competitor relation mappings:
+cp config/stock_relations.example.json config/stock_relations.json
 python scripts/market_db.py
 ```
 
