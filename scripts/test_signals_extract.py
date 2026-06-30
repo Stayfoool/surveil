@@ -12,7 +12,9 @@ from pathlib import Path
 from article_gate import ensure_article_reviews_table
 from market_db import init_db
 from official_news_gate import ensure_official_news_table
+import signal_outcome_update
 from signal_outcome_update import compute_metrics, quote_rows_from_response, target_rows
+from signal_store import upsert_signal
 from signal_review import classify_review, review_signals
 from stock_relations import (
     accept_relation_suggestion,
@@ -316,6 +318,84 @@ def test_outcome_target_rows_only_select_a_share_symbols() -> None:
         rows = target_rows(conn, days=10, limit=None)
         assert rows
         assert all(str(row["symbol"]).endswith((".SZ", ".SH", ".BJ")) for row in rows)
+        conn.close()
+
+
+def test_outcome_update_fetches_quotes_once_per_symbol() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        conn = init_db(path)
+        for index in range(2):
+            upsert_signal(
+                conn,
+                {
+                    "source_table": "events",
+                    "source_id": f"event-{index}",
+                    "source": "test",
+                    "title": f"测试信号 {index}",
+                    "url": "https://example.com",
+                    "published_at": "2026-06-22T01:00:00+00:00",
+                    "first_seen_at": "2026-06-22T01:01:00+00:00",
+                    "importance": "high",
+                    "direction": "positive",
+                    "incremental_classification": "增量利好",
+                },
+                targets=[
+                    {
+                        "symbol": "000725.SZ",
+                        "name": "京东方A",
+                        "target_role": "holding",
+                        "expected_direction": "positive",
+                    }
+                ],
+            )
+        conn.close()
+
+        calls: list[tuple[str, str, str]] = []
+        original_ifind_client = signal_outcome_update.IfindClient
+
+        class FakeIfindClient:
+            @classmethod
+            def from_env(cls):
+                return cls()
+
+            def history_quotes(self, codes, indicators, startdate, enddate, functionpara=None):  # noqa: ANN001
+                calls.append((codes, startdate, enddate))
+                return {
+                    "tables": [
+                        {
+                            "thscode": codes,
+                            "time": ["2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25"],
+                            "table": {
+                                "close": [10, 11, 12, 13],
+                                "amount": [100, 120, 130, 140],
+                            },
+                        }
+                    ]
+                }
+
+        try:
+            signal_outcome_update.IfindClient = FakeIfindClient
+            counts = signal_outcome_update.update_outcomes(db_path=path, days=30)
+        finally:
+            signal_outcome_update.IfindClient = original_ifind_client
+
+        assert counts["targets"] == 2
+        assert counts["symbols"] == 1
+        assert counts["provider_calls"] == 1
+        assert counts["updated"] == 2
+        assert len(calls) == 1
+        assert calls[0][0] == "000725.SZ"
+        assert calls[0][1] == "2026-06-19"
+        assert calls[0][2] >= "2026-06-25"
+        conn = init_db(path)
+        outcome_rows = conn.execute(
+            "SELECT signal_id, symbol, return_1d, outcome_status FROM signal_outcomes ORDER BY signal_id"
+        ).fetchall()
+        assert len(outcome_rows) == 2
+        assert all(row[1] == "000725.SZ" for row in outcome_rows)
+        assert all(row[2] == 10.0 for row in outcome_rows)
+        assert all(row[3] == "partial_3d" for row in outcome_rows)
         conn.close()
 
 

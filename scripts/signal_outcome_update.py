@@ -201,6 +201,24 @@ def fetch_quotes(client: IfindClient, symbol: str, start: date, end: date) -> li
     return quote_rows_from_response(response)
 
 
+def event_start_date(row: sqlite3.Row) -> date:
+    return published_date(str(row["published_at"] or ""))
+
+
+def quote_window_start(row: sqlite3.Row) -> date:
+    return event_start_date(row) - timedelta(days=3)
+
+
+def group_rows_by_symbol(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        symbol = normalize_symbol(str(row["symbol"] or ""))
+        if not symbol:
+            continue
+        grouped.setdefault(symbol, []).append(row)
+    return grouped
+
+
 def target_rows(conn: sqlite3.Connection, days: int, limit: int | None) -> list[sqlite3.Row]:
     since = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
     sql = """
@@ -223,10 +241,65 @@ def target_rows(conn: sqlite3.Connection, days: int, limit: int | None) -> list[
     return list(conn.execute(sql, params).fetchall())
 
 
+def write_unavailable_outcome(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    symbol: str,
+    *,
+    as_of_date: str,
+    status: str,
+    reason: str,
+) -> None:
+    upsert_outcome(
+        conn,
+        signal_id=int(row["signal_id"]),
+        target_id=int(row["target_id"]),
+        symbol=symbol,
+        as_of_date=as_of_date,
+        outcome_status=status,
+        outcome_json={"reason": reason[:1000]},
+    )
+
+
+def update_rows_with_quotes(
+    conn: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    symbol: str,
+    quotes: list[dict[str, Any]],
+    *,
+    as_of_date: str,
+) -> int:
+    updated = 0
+    for row in rows:
+        event_date = event_start_date(row)
+        event_quotes = [item for item in quotes if item["date"] >= event_date]
+        expected = str(row["expected_direction"] or row["signal_direction"] or "")
+        metrics, outcome_json, status = compute_metrics(event_quotes, expected)
+        outcome_json["provider_query"] = {
+            "mode": "symbol_batch",
+            "symbol": symbol,
+            "query_quote_count": len(quotes),
+            "event_date": event_date.isoformat(),
+        }
+        upsert_outcome(
+            conn,
+            signal_id=int(row["signal_id"]),
+            target_id=int(row["target_id"]),
+            symbol=symbol,
+            as_of_date=as_of_date,
+            outcome_status=status,
+            metrics=metrics,
+            outcome_json=outcome_json,
+        )
+        updated += 1
+        print(f"outcome {symbol} signal={row['signal_id']} status={status}", flush=True)
+    return updated
+
+
 def update_outcomes(*, db_path: Path, days: int, limit: int | None = None, dry_run: bool = False) -> dict[str, int]:
     load_env()
     init_db(db_path).close()
-    counts = {"targets": 0, "updated": 0, "skipped": 0, "failed": 0}
+    counts = {"targets": 0, "symbols": 0, "provider_calls": 0, "updated": 0, "skipped": 0, "failed": 0}
     client: IfindClient | None = None
     if not dry_run:
         try:
@@ -238,67 +311,58 @@ def update_outcomes(*, db_path: Path, days: int, limit: int | None = None, dry_r
         conn.row_factory = sqlite3.Row
         rows = target_rows(conn, days, limit)
         counts["targets"] = len(rows)
-        for row in rows:
-            symbol = normalize_symbol(str(row["symbol"] or ""))
-            start = published_date(str(row["published_at"] or "")) - timedelta(days=3)
-            end = datetime.now(timezone.utc).date()
+        grouped = group_rows_by_symbol(rows)
+        counts["symbols"] = len(grouped)
+        counts["skipped"] += len(rows) - sum(len(items) for items in grouped.values())
+        end = datetime.now(timezone.utc).date()
+        as_of_date = end.isoformat()
+        for symbol, symbol_rows in grouped.items():
+            start = min(quote_window_start(row) for row in symbol_rows)
             if dry_run:
-                print(f"[dry-run] {symbol} signal={row['signal_id']} {start}..{end}", flush=True)
+                print(f"[dry-run] {symbol} rows={len(symbol_rows)} {start}..{end}", flush=True)
                 continue
             if client is None:
-                counts["skipped"] += 1
-                upsert_outcome(
-                    conn,
-                    signal_id=int(row["signal_id"]),
-                    target_id=int(row["target_id"]),
-                    symbol=symbol,
-                    as_of_date=end.isoformat(),
-                    outcome_status="ifind_not_configured",
-                    outcome_json={"reason": "missing IFIND_REFRESH_TOKEN or IFIND_ACCESS_TOKEN"},
-                )
+                counts["skipped"] += len(symbol_rows)
+                for row in symbol_rows:
+                    write_unavailable_outcome(
+                        conn,
+                        row,
+                        symbol,
+                        as_of_date=as_of_date,
+                        status="ifind_not_configured",
+                        reason="missing IFIND_REFRESH_TOKEN or IFIND_ACCESS_TOKEN",
+                    )
                 continue
             try:
                 quotes = fetch_quotes(client, symbol, start, end)
+                counts["provider_calls"] += 1
             except IfindNoDataError as exc:
-                counts["failed"] += 1
-                upsert_outcome(
-                    conn,
-                    signal_id=int(row["signal_id"]),
-                    target_id=int(row["target_id"]),
-                    symbol=symbol,
-                    as_of_date=end.isoformat(),
-                    outcome_status="quote_no_data",
-                    outcome_json={"error": str(exc)[:1000]},
-                )
+                counts["failed"] += len(symbol_rows)
+                counts["provider_calls"] += 1
+                for row in symbol_rows:
+                    write_unavailable_outcome(
+                        conn,
+                        row,
+                        symbol,
+                        as_of_date=as_of_date,
+                        status="quote_no_data",
+                        reason=str(exc),
+                    )
                 continue
             except Exception as exc:  # noqa: BLE001 - isolate provider failures per signal
-                counts["failed"] += 1
-                upsert_outcome(
-                    conn,
-                    signal_id=int(row["signal_id"]),
-                    target_id=int(row["target_id"]),
-                    symbol=symbol,
-                    as_of_date=end.isoformat(),
-                    outcome_status="quote_error",
-                    outcome_json={"error": str(exc)[:1000]},
-                )
+                counts["failed"] += len(symbol_rows)
+                counts["provider_calls"] += 1
+                for row in symbol_rows:
+                    write_unavailable_outcome(
+                        conn,
+                        row,
+                        symbol,
+                        as_of_date=as_of_date,
+                        status="quote_error",
+                        reason=str(exc),
+                    )
                 continue
-            event_date = published_date(str(row["published_at"] or ""))
-            quotes = [item for item in quotes if item["date"] >= event_date]
-            expected = str(row["expected_direction"] or row["signal_direction"] or "")
-            metrics, outcome_json, status = compute_metrics(quotes, expected)
-            upsert_outcome(
-                conn,
-                signal_id=int(row["signal_id"]),
-                target_id=int(row["target_id"]),
-                symbol=symbol,
-                as_of_date=end.isoformat(),
-                outcome_status=status,
-                metrics=metrics,
-                outcome_json=outcome_json,
-            )
-            counts["updated"] += 1
-            print(f"outcome {symbol} signal={row['signal_id']} status={status}", flush=True)
+            counts["updated"] += update_rows_with_quotes(conn, symbol_rows, symbol, quotes, as_of_date=as_of_date)
     return counts
 
 
