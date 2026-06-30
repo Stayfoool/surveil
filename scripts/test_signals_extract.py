@@ -14,7 +14,14 @@ from market_db import init_db
 from official_news_gate import ensure_official_news_table
 from signal_outcome_update import compute_metrics, quote_rows_from_response, target_rows
 from signal_review import classify_review, review_signals
-from stock_relations import import_relations
+from stock_relations import (
+    accept_relation_suggestion,
+    create_relation_suggestion,
+    diff_relations,
+    export_relations,
+    import_relations,
+    save_relation,
+)
 from signals_extract import extract_signals, target_from_text, x_targets
 
 
@@ -348,6 +355,105 @@ def test_relation_import_expands_signal_targets() -> None:
         conn.close()
 
 
+def test_relation_json_roundtrip_and_suggestion_accept() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        config_path = Path(tmpdir) / "relations.json"
+        init_db(path).close()
+        relation = save_relation(
+            {
+                "symbol": "HBM",
+                "symbol_name": "HBM",
+                "related_symbol": "300308.SZ",
+                "related_name": "中际旭创",
+                "relation_type": "AI memory read-through",
+                "impact_direction": "positive",
+                "theme": "AI 算力",
+                "reason": "HBM 供给紧张强化 AI 服务器链景气度。",
+                "confidence": "中",
+                "relation_strength": "3",
+                "source": "test",
+                "enabled": True,
+            },
+            db_path=path,
+        )
+        assert relation["id"] > 0
+        exported = export_relations(db_path=path, config_path=config_path)
+        assert exported["count"] == 1
+        diff = diff_relations(db_path=path, config_path=config_path)
+        assert diff["only_in_db"] == []
+        assert diff["only_in_json"] == []
+        suggestion = create_relation_suggestion(
+            {
+                "symbol": "人造钻石散热",
+                "related_symbol": "300179.SZ",
+                "related_name": "四方达",
+                "relation_type": "thermal material theme",
+                "impact_direction": "positive",
+                "reason": "芯片散热材料主题映射。",
+                "confidence": "中",
+                "source": "test-suggestion",
+            },
+            db_path=path,
+        )
+        accepted = accept_relation_suggestion(suggestion_id=suggestion["id"], db_path=path)
+        assert accepted["symbol"] == "人造钻石散热"
+        assert accepted["related_symbol"] == "300179.SZ"
+
+
+def test_theme_context_expands_signal_targets() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        init_db(path).close()
+        save_relation(
+            {
+                "symbol": "人造钻石散热",
+                "symbol_name": "人造钻石散热",
+                "related_symbol": "300179.SZ",
+                "related_name": "四方达",
+                "relation_type": "thermal material theme",
+                "impact_direction": "positive",
+                "theme": "芯片散热",
+                "reason": "金刚石散热主题映射到相关材料股。",
+                "confidence": "中",
+                "enabled": True,
+            },
+            db_path=path,
+        )
+        with sqlite3.connect(path) as conn:
+            ensure_article_reviews_table(conn)
+            conn.execute(
+                """
+                INSERT INTO article_reviews (
+                    source, item_id, url, title, source_module, published_at,
+                    importance, push_now, market_impact, incremental_classification,
+                    affected_targets_json, reason, daily_summary, confidence,
+                    gate_json, pushed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'high', 1, ?, '增量利好', '[]', ?, ?, '中', '{}', ?, ?)
+                """,
+                (
+                    "rss",
+                    "diamond-cooling-1",
+                    "https://example.com/diamond",
+                    "人造钻石给芯片降温：量产元年已至",
+                    "test",
+                    NOW,
+                    "人造钻石散热进入量产阶段，可能影响芯片散热材料链。",
+                    "标题命中人造钻石散热主题。",
+                    "人造钻石散热主题强化。",
+                    NOW,
+                    NOW,
+                ),
+            )
+            conn.commit()
+        extract_signals(db_path=path, days=10, dry_run=False)
+        with sqlite3.connect(path) as conn:
+            row = conn.execute(
+                "SELECT symbol, name, target_role, relation_type FROM signal_targets WHERE symbol = '300179.SZ'"
+            ).fetchone()
+        assert row == ("300179.SZ", "四方达", "related_stock", "thermal material theme")
+
+
 def test_signal_review_classification_and_insert() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "surveil.sqlite3"
@@ -412,6 +518,8 @@ def main() -> int:
     test_bare_foreign_numeric_codes_do_not_become_a_share_symbols()
     test_outcome_target_rows_only_select_a_share_symbols()
     test_relation_import_expands_signal_targets()
+    test_relation_json_roundtrip_and_suggestion_accept()
+    test_theme_context_expands_signal_targets()
     test_signal_review_classification_and_insert()
     print("signal extraction/outcome tests OK")
     return 0

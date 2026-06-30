@@ -30,6 +30,20 @@ from holdings_store import (
 from market_db import DEFAULT_DB_PATH
 from media_keyword_config import media_keyword_payload, save_media_keyword_config
 from settings_store import save_settings, settings_payload
+from signals_extract import extract_signals
+from stock_relations import (
+    DEFAULT_CONFIG_PATH as STOCK_RELATIONS_CONFIG_PATH,
+    accept_relation_suggestion,
+    delete_relation,
+    diff_relations,
+    export_relations,
+    import_relations,
+    list_relation_suggestions,
+    list_relations,
+    reject_relation_suggestion,
+    save_relation,
+    set_relation_enabled,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -465,42 +479,19 @@ def fetch_signal_summary() -> dict[str, Any]:
     return {"cards": cards, "verdicts": verdicts, "source_scores": source_scores}
 
 
-def fetch_relation_rows(q: str = "", limit: int = 100) -> list[dict[str, Any]]:
-    q_lower = q.strip().lower()
-    rows: list[dict[str, Any]] = []
-    with connect_sqlite(DEFAULT_DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-        if not table_exists(conn, "stock_relations"):
-            return []
-        for row in conn.execute(
-            """
-            SELECT symbol, symbol_name, related_symbol, related_name, relation_type,
-                   impact_direction, theme, reason, confidence, source, enabled, updated_at
-            FROM stock_relations
-            ORDER BY enabled DESC, updated_at DESC
-            LIMIT 300
-            """
-        ):
-            item = {
-                "symbol": row["symbol"] or "",
-                "symbol_name": row["symbol_name"] or "",
-                "related_symbol": row["related_symbol"] or "",
-                "related_name": row["related_name"] or "",
-                "relation_type": row["relation_type"] or "",
-                "impact_direction": row["impact_direction"] or "",
-                "theme": row["theme"] or "",
-                "reason": row["reason"] or "",
-                "confidence": row["confidence"] or "",
-                "source": row["source"] or "",
-                "enabled": bool(row["enabled"]),
-                "updated_at": row["updated_at"] or "",
-            }
-            if q_lower and q_lower not in json.dumps(item, ensure_ascii=False).lower():
-                continue
-            rows.append(item)
-            if len(rows) >= max(1, min(limit, 300)):
-                break
-    return rows
+def fetch_relation_rows(q: str = "", limit: int = 100, enabled: str = "all") -> list[dict[str, Any]]:
+    return list_relations(db_path=DEFAULT_DB_PATH, q=q, enabled=enabled, limit=limit)
+
+
+def relation_snapshot_payload() -> dict[str, Any]:
+    exported = export_relations(db_path=DEFAULT_DB_PATH, config_path=STOCK_RELATIONS_CONFIG_PATH)
+    return {"snapshot": exported}
+
+
+def run_relation_backfill(days: int) -> dict[str, Any]:
+    safe_days = max(1, min(int(days or 7), 60))
+    counts = extract_signals(db_path=DEFAULT_DB_PATH, days=safe_days, dry_run=False)
+    return {"days": safe_days, "counts": counts}
 
 
 def overview_payload(day: str = "") -> dict[str, Any]:
@@ -746,6 +737,7 @@ def html_page(token_required: bool) -> str:
     <button id="tab-overview" onclick="showView('overview')">今日总览</button>
     <button id="tab-events" onclick="showView('events')">事件中心</button>
     <button id="tab-signals" onclick="showView('signals')">信号复盘</button>
+    <button id="tab-relations" onclick="showView('relations')">关系映射</button>
     <button id="tab-health" onclick="showView('health')">任务健康</button>
     <button id="tab-keywords" onclick="showView('keywords')">媒体关键词</button>
     <button id="tab-settings" onclick="showView('settings')">配置中心</button>
@@ -863,6 +855,74 @@ def html_page(token_required: bool) -> str:
           </div>
         </section>
       </div>
+    </section>
+
+    <section id="view-relations" class="view">
+      <div class="section-title">
+        <h2>关系映射</h2>
+        <div>
+          <button onclick="loadRelationManager()">刷新</button>
+          <button class="primary" onclick="openRelationModal()">新增关系</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <input id="relationManageQuery" placeholder="搜索起点、终点、主题、原因" style="width:260px">
+        <select id="relationManageEnabled" style="width:130px">
+          <option value="all">全部</option>
+          <option value="enabled">启用</option>
+          <option value="disabled">停用</option>
+        </select>
+        <button class="primary" onclick="loadRelationManager()">查询</button>
+        <button onclick="exportRelationJson()">导出 JSON</button>
+        <button onclick="importRelationJson()">从 JSON 导入</button>
+        <button onclick="diffRelationJson()">检测差异</button>
+        <input id="relationBackfillDays" type="number" min="1" max="60" value="7" style="width:86px">
+        <button onclick="backfillRelations()">回填最近 N 天</button>
+      </div>
+      <section class="panel">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:80px">状态</th>
+                <th style="width:150px">触发</th>
+                <th style="width:150px">映射</th>
+                <th style="width:130px">方向/强度</th>
+                <th>关系与原因</th>
+                <th style="width:130px">复盘</th>
+                <th style="width:150px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="relationManageRows"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="panel" style="margin-top:12px">
+        <div class="list-row" style="padding:10px 12px"><strong>候选关系</strong><span class="summary">大模型或人工沉淀的候选，确认后才正式生效</span></div>
+        <div class="toolbar" style="padding:0 12px 10px">
+          <select id="relationSuggestionStatus" style="width:140px">
+            <option value="pending">待确认</option>
+            <option value="accepted">已确认</option>
+            <option value="rejected">已拒绝</option>
+            <option value="all">全部</option>
+          </select>
+          <button onclick="loadRelationSuggestions()">刷新候选</button>
+        </div>
+        <div class="table-wrap" style="max-height:360px">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:90px">状态</th>
+                <th style="width:150px">触发</th>
+                <th style="width:150px">映射</th>
+                <th>理由</th>
+                <th style="width:130px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="relationSuggestionRows"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
 
     <section id="view-health" class="view">
@@ -1022,12 +1082,49 @@ def html_page(token_required: bool) -> str:
     </div>
   </div>
 
+  <div id="relationModal" class="modal-backdrop">
+    <div class="modal">
+      <h2 id="relationModalTitle">编辑关系</h2>
+      <div class="body">
+        <div class="grid">
+          <div class="field"><label>触发代码/主题</label><input id="relSymbol" placeholder="例如 NVDA、HBM、人造钻石散热"></div>
+          <div class="field"><label>触发名称</label><input id="relSymbolName" placeholder="例如 NVIDIA、HBM、金刚石散热"></div>
+          <div class="field"><label>映射股票代码</label><input id="relRelatedSymbol" placeholder="例如 300308.SZ"></div>
+          <div class="field"><label>映射股票名称</label><input id="relRelatedName" placeholder="例如 中际旭创"></div>
+          <div class="field"><label>关系类型</label><input id="relRelationType" placeholder="例如 AI optical interconnect supply chain"></div>
+          <div class="field"><label>影响方向</label>
+            <select id="relImpactDirection">
+              <option value="positive">positive</option>
+              <option value="negative">negative</option>
+              <option value="neutral">neutral</option>
+              <option value="uncertain">uncertain</option>
+            </select>
+          </div>
+          <div class="field"><label>主题</label><input id="relTheme" placeholder="例如 光模块/CPO/AI 数据中心"></div>
+          <div class="field"><label>置信度</label><input id="relConfidence" placeholder="高 / 中 / 低 或 0-100"></div>
+          <div class="field"><label>强度</label><input id="relStrength" placeholder="1-5 或 高/中/低"></div>
+          <div class="field"><label>来源</label><input id="relSource" placeholder="web / Serenity / 机构研报 / UP主蒸馏"></div>
+          <div class="field"><label>生效日期</label><input id="relValidFrom" type="date"></div>
+          <div class="field"><label>失效日期</label><input id="relValidTo" type="date"></div>
+        </div>
+        <div class="field" style="margin-top:12px"><label>映射原因 / 证据</label><textarea id="relReason" style="min-height:110px" placeholder="说明为什么这个事件会传导到该股票，最好写清一阶/二阶逻辑。"></textarea></div>
+        <label style="display:flex; align-items:center; gap:8px; margin-top:10px"><input id="relEnabled" type="checkbox" checked> 启用</label>
+      </div>
+      <div class="foot">
+        <button onclick="closeRelationModal()">取消</button>
+        <button class="primary" onclick="saveRelationFromModal()">保存关系</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 let token = localStorage.getItem('surveil_holdings_token') || '';
 let holdings = [];
 let pendingPayload = null;
 let loadedHoldings = false;
 let codeDefaultKeywords = [];
+let managedRelations = [];
+let editingRelationId = null;
 
 function headers() {{
   const h = {{'Content-Type': 'application/json'}};
@@ -1102,6 +1199,7 @@ function showView(name) {{
   if (name === 'overview') loadOverview();
   if (name === 'events') loadEvents();
   if (name === 'signals') loadSignals();
+  if (name === 'relations') loadRelationManager();
   if (name === 'health') loadHealth();
   if (name === 'keywords') loadKeywords();
   if (name === 'settings') loadSettings();
@@ -1250,6 +1348,241 @@ async function loadRelations() {{
         </td>
       </tr>
     `).join('') || '<tr><td colspan="4">暂无关系配置。可复制 config/stock_relations.example.json 为私有 config/stock_relations.json 后导入。</td></tr>';
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function loadRelationManager() {{
+  try {{
+    const params = new URLSearchParams();
+    const q = document.getElementById('relationManageQuery') ? document.getElementById('relationManageQuery').value.trim() : '';
+    const enabled = document.getElementById('relationManageEnabled') ? document.getElementById('relationManageEnabled').value : 'all';
+    if (q) params.set('q', q);
+    if (enabled) params.set('enabled', enabled);
+    const data = await api('/api/relations?' + params.toString());
+    managedRelations = data.relations || [];
+    document.getElementById('relationManageRows').innerHTML = managedRelations.map(item => `
+      <tr>
+        <td>${{badge(item.enabled ? '启用' : '停用')}}<div class="hint">${{formatTime(item.updated_at)}}</div></td>
+        <td><strong>${{escapeHtml(item.symbol || '')}}</strong><div class="hint">${{escapeHtml(item.symbol_name || '')}}</div></td>
+        <td><strong>${{escapeHtml(item.related_symbol || '')}}</strong><div class="hint">${{escapeHtml(item.related_name || '')}}</div></td>
+        <td>${{badge(item.impact_direction || '')}}<div class="hint">强度 ${{escapeHtml(item.relation_strength || '-')}} / 置信 ${{escapeHtml(item.confidence || '-')}}</div></td>
+        <td class="summary-cell">
+          <div>${{escapeHtml(item.relation_type || '')}} / ${{escapeHtml(item.theme || '')}}</div>
+          <div class="hint">${{escapeHtml(shortText(item.reason || '', 220))}}</div>
+          <div class="hint">${{escapeHtml(item.source || '')}} ${{item.valid_to ? ' / 有效至 ' + escapeHtml(item.valid_to) : ''}}</div>
+        </td>
+        <td>${{escapeHtml(item.last_review_verdict || '-')}}<div class="hint">hit ${{item.hit_count || 0}} / miss ${{item.miss_count || 0}}</div></td>
+        <td>
+          <button onclick="editRelation(${{item.id}})">编辑</button>
+          <button onclick="toggleRelation(${{item.id}}, ${{item.enabled ? 'false' : 'true'}})">${{item.enabled ? '停用' : '启用'}}</button>
+          <button class="danger" onclick="deleteRelationRow(${{item.id}})">删除</button>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="7">暂无关系映射。</td></tr>';
+    await loadRelationSuggestions();
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+function clearRelationForm() {{
+  editingRelationId = null;
+  document.getElementById('relationModalTitle').textContent = '新增关系';
+  ['relSymbol','relSymbolName','relRelatedSymbol','relRelatedName','relRelationType','relTheme','relConfidence','relStrength','relSource','relValidFrom','relValidTo','relReason'].forEach(id => {{
+    document.getElementById(id).value = '';
+  }});
+  document.getElementById('relImpactDirection').value = 'positive';
+  document.getElementById('relEnabled').checked = true;
+}}
+
+function openRelationModal(item=null) {{
+  clearRelationForm();
+  if (item) {{
+    editingRelationId = item.id;
+    document.getElementById('relationModalTitle').textContent = '编辑关系';
+    document.getElementById('relSymbol').value = item.symbol || '';
+    document.getElementById('relSymbolName').value = item.symbol_name || '';
+    document.getElementById('relRelatedSymbol').value = item.related_symbol || '';
+    document.getElementById('relRelatedName').value = item.related_name || '';
+    document.getElementById('relRelationType').value = item.relation_type || '';
+    document.getElementById('relImpactDirection').value = item.impact_direction || 'uncertain';
+    document.getElementById('relTheme').value = item.theme || '';
+    document.getElementById('relConfidence').value = item.confidence || '';
+    document.getElementById('relStrength').value = item.relation_strength || '';
+    document.getElementById('relSource').value = item.source || 'web';
+    document.getElementById('relValidFrom').value = item.valid_from || '';
+    document.getElementById('relValidTo').value = item.valid_to || '';
+    document.getElementById('relReason').value = item.reason || '';
+    document.getElementById('relEnabled').checked = item.enabled !== false;
+  }} else {{
+    document.getElementById('relSource').value = 'web';
+  }}
+  document.getElementById('relationModal').style.display = 'flex';
+}}
+
+function closeRelationModal() {{
+  document.getElementById('relationModal').style.display = 'none';
+}}
+
+function editRelation(id) {{
+  const item = managedRelations.find(row => Number(row.id) === Number(id));
+  if (!item) {{
+    showStatus('没有找到这条关系。', 'err');
+    return;
+  }}
+  openRelationModal(item);
+}}
+
+function relationFormPayload() {{
+  return {{
+    symbol: document.getElementById('relSymbol').value.trim(),
+    symbol_name: document.getElementById('relSymbolName').value.trim(),
+    related_symbol: document.getElementById('relRelatedSymbol').value.trim(),
+    related_name: document.getElementById('relRelatedName').value.trim(),
+    relation_type: document.getElementById('relRelationType').value.trim() || 'related',
+    impact_direction: document.getElementById('relImpactDirection').value.trim(),
+    theme: document.getElementById('relTheme').value.trim(),
+    confidence: document.getElementById('relConfidence').value.trim(),
+    relation_strength: document.getElementById('relStrength').value.trim(),
+    source: document.getElementById('relSource').value.trim() || 'web',
+    valid_from: document.getElementById('relValidFrom').value.trim(),
+    valid_to: document.getElementById('relValidTo').value.trim(),
+    reason: document.getElementById('relReason').value.trim(),
+    enabled: document.getElementById('relEnabled').checked
+  }};
+}}
+
+async function saveRelationFromModal() {{
+  try {{
+    const payload = {{id: editingRelationId, relation: relationFormPayload()}};
+    const data = await api('/api/relations/save', {{method: 'POST', body: JSON.stringify(payload)}});
+    closeRelationModal();
+    await loadRelationManager();
+    showStatus(`关系已保存并同步 JSON 快照：${{(data.snapshot || {{}}).path || ''}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function deleteRelationRow(id) {{
+  if (!confirm('确认删除这条关系映射？')) return;
+  try {{
+    const data = await api('/api/relations/delete', {{method: 'POST', body: JSON.stringify({{id}})}});
+    await loadRelationManager();
+    showStatus(`关系已删除并同步 JSON 快照：${{(data.snapshot || {{}}).path || ''}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function toggleRelation(id, enabled) {{
+  try {{
+    const data = await api('/api/relations/toggle', {{method: 'POST', body: JSON.stringify({{id, enabled}})}});
+    await loadRelationManager();
+    showStatus(`关系已${{enabled ? '启用' : '停用'}}并同步 JSON 快照：${{(data.snapshot || {{}}).path || ''}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function exportRelationJson() {{
+  try {{
+    const data = await api('/api/relations/export', {{method: 'POST', body: JSON.stringify({{}})}});
+    showStatus(`已导出 ${{(data.snapshot || {{}}).count || 0}} 条关系到 ${{(data.snapshot || {{}}).path || ''}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function importRelationJson() {{
+  if (!confirm('确认从私有 config/stock_relations.json 导入并覆盖同 key 关系？')) return;
+  try {{
+    const data = await api('/api/relations/import', {{method: 'POST', body: JSON.stringify({{}})}});
+    await loadRelationManager();
+    showStatus(`导入完成：读取 ${{data.counts.read}} 条，写入 ${{data.counts.imported}} 条，跳过 ${{data.counts.skipped}} 条。`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function diffRelationJson() {{
+  try {{
+    const data = await api('/api/relations/diff');
+    const diff = data.diff || {{}};
+    const text = [
+      `数据库：${{diff.db_count || 0}} 条`,
+      `JSON：${{diff.json_count || 0}} 条`,
+      `JSON 无效行：${{diff.invalid_json_rows || 0}}`,
+      '',
+      `仅数据库存在：${{(diff.only_in_db || []).length}}`,
+      JSON.stringify(diff.only_in_db || [], null, 2),
+      '',
+      `仅 JSON 存在：${{(diff.only_in_json || []).length}}`,
+      JSON.stringify(diff.only_in_json || [], null, 2),
+      '',
+      `内容不同：${{(diff.changed || []).length}}`,
+      JSON.stringify(diff.changed || [], null, 2)
+    ].join('\\n');
+    document.getElementById('diffText').textContent = text;
+    document.getElementById('diffModal').style.display = 'flex';
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function backfillRelations() {{
+  if (!confirm('确认重跑最近 N 天信号抽取？这会按当前关系映射补充 related_stock。')) return;
+  try {{
+    const days = Number(document.getElementById('relationBackfillDays').value || 7);
+    const data = await api('/api/relations/backfill', {{method: 'POST', body: JSON.stringify({{days}})}});
+    showStatus(`回填完成：最近 ${{data.days}} 天，${{JSON.stringify(data.counts)}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function loadRelationSuggestions() {{
+  try {{
+    const status = document.getElementById('relationSuggestionStatus') ? document.getElementById('relationSuggestionStatus').value : 'pending';
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    const data = await api('/api/relation-suggestions?' + params.toString());
+    document.getElementById('relationSuggestionRows').innerHTML = (data.suggestions || []).map(item => `
+      <tr>
+        <td>${{badge(item.status || '')}}<div class="hint">${{formatTime(item.updated_at)}}</div></td>
+        <td><strong>${{escapeHtml(item.symbol || '')}}</strong><div class="hint">${{escapeHtml(item.symbol_name || '')}}</div></td>
+        <td><strong>${{escapeHtml(item.related_symbol || '')}}</strong><div class="hint">${{escapeHtml(item.related_name || '')}}</div></td>
+        <td class="summary-cell">
+          <div>${{escapeHtml(item.relation_type || '')}} / ${{escapeHtml(item.theme || '')}} / ${{escapeHtml(item.confidence || '')}}</div>
+          <div class="hint">${{escapeHtml(shortText(item.reason || '', 220))}}</div>
+        </td>
+        <td>
+          ${{item.status === 'pending' ? `<button onclick="acceptSuggestion(${{item.id}})">确认</button><button class="danger" onclick="rejectSuggestion(${{item.id}})">拒绝</button>` : '-'}}
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="5">暂无候选关系。</td></tr>';
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function acceptSuggestion(id) {{
+  try {{
+    const data = await api('/api/relation-suggestions/accept', {{method: 'POST', body: JSON.stringify({{id}})}});
+    await loadRelationManager();
+    showStatus(`候选关系已确认并同步 JSON 快照：${{(data.snapshot || {{}}).path || ''}}`);
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+async function rejectSuggestion(id) {{
+  try {{
+    await api('/api/relation-suggestions/reject', {{method: 'POST', body: JSON.stringify({{id}})}});
+    await loadRelationSuggestions();
+    showStatus('候选关系已拒绝。');
   }} catch (err) {{
     showStatus(err.message, 'err');
   }}
@@ -1712,6 +2045,60 @@ class HoldingsHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
+        if parsed.path == "/api/relations":
+            if not self.require_auth():
+                return
+            try:
+                qs = parse_qs(parsed.query)
+                limit_raw = (qs.get("limit") or ["300"])[0]
+                try:
+                    limit = int(limit_raw)
+                except ValueError:
+                    limit = 300
+                self.send_json(
+                    {
+                        "ok": True,
+                        "relations": fetch_relation_rows(
+                            q=(qs.get("q") or [""])[0],
+                            enabled=(qs.get("enabled") or ["all"])[0],
+                            limit=limit,
+                        ),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if parsed.path == "/api/relations/diff":
+            if not self.require_auth():
+                return
+            try:
+                self.send_json(
+                    {
+                        "ok": True,
+                        "diff": diff_relations(db_path=DEFAULT_DB_PATH, config_path=STOCK_RELATIONS_CONFIG_PATH),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if parsed.path == "/api/relation-suggestions":
+            if not self.require_auth():
+                return
+            try:
+                qs = parse_qs(parsed.query)
+                self.send_json(
+                    {
+                        "ok": True,
+                        "suggestions": list_relation_suggestions(
+                            db_path=DEFAULT_DB_PATH,
+                            status=(qs.get("status") or ["pending"])[0],
+                            limit=100,
+                        ),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
         if parsed.path == "/api/health":
             if not self.require_auth():
                 return
@@ -1774,6 +2161,71 @@ class HoldingsHandler(BaseHTTPRequestHandler):
                 saved = save_settings(values)
                 saved["ok"] = True
                 self.send_json(saved)
+                return
+            if parsed.path == "/api/relations/save":
+                relation = payload.get("relation")
+                if not isinstance(relation, dict):
+                    raise HoldingsError("请求缺少 relation 对象")
+                relation_id = payload.get("id")
+                saved_relation = save_relation(
+                    relation,
+                    db_path=DEFAULT_DB_PATH,
+                    relation_id=int(relation_id) if relation_id else None,
+                )
+                response = {"ok": True, "relation": saved_relation}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relations/delete":
+                relation_id = int(payload.get("id") or 0)
+                if relation_id <= 0:
+                    raise HoldingsError("请求缺少有效 id")
+                deleted = delete_relation(relation_id=relation_id, db_path=DEFAULT_DB_PATH)
+                response = {"ok": True, "deleted": deleted}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relations/toggle":
+                relation_id = int(payload.get("id") or 0)
+                if relation_id <= 0:
+                    raise HoldingsError("请求缺少有效 id")
+                enabled = bool(payload.get("enabled"))
+                relation = set_relation_enabled(relation_id=relation_id, enabled=enabled, db_path=DEFAULT_DB_PATH)
+                response = {"ok": True, "relation": relation}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relations/export":
+                response = {"ok": True}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relations/import":
+                counts = import_relations(db_path=DEFAULT_DB_PATH, config_path=STOCK_RELATIONS_CONFIG_PATH)
+                response = {"ok": True, "counts": counts}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relations/backfill":
+                response = {"ok": True}
+                response.update(run_relation_backfill(int(payload.get("days") or 7)))
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relation-suggestions/accept":
+                suggestion_id = int(payload.get("id") or 0)
+                if suggestion_id <= 0:
+                    raise HoldingsError("请求缺少有效 id")
+                relation = accept_relation_suggestion(suggestion_id=suggestion_id, db_path=DEFAULT_DB_PATH)
+                response = {"ok": True, "relation": relation}
+                response.update(relation_snapshot_payload())
+                self.send_json(response)
+                return
+            if parsed.path == "/api/relation-suggestions/reject":
+                suggestion_id = int(payload.get("id") or 0)
+                if suggestion_id <= 0:
+                    raise HoldingsError("请求缺少有效 id")
+                rejected = reject_relation_suggestion(suggestion_id=suggestion_id, db_path=DEFAULT_DB_PATH)
+                self.send_json({"ok": True, "rejected": rejected})
                 return
             items = payload.get("holdings")
             if not isinstance(items, list):

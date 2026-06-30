@@ -240,14 +240,16 @@ python scripts/signal_digest.py --mode daily --dry-run
 
 The outcome updater currently backfills A-share targets through iFinD history quotes when iFinD credentials are configured. It records unsupported markets or missing quote data explicitly instead of inventing results. JYGS action/prediction tables are not part of this loop.
 
-To add private relationship mappings, copy the example file and import it:
+Relationship mappings can be managed from the local Web workbench's `关系映射` tab. SQLite is the live source used by signal extraction; `config/stock_relations.json` is a private backup and migration snapshot. Web saves automatically update SQLite and export the private JSON snapshot.
+
+To seed private relationship mappings from JSON, copy the example file and import it:
 
 ```bash
 cp config/stock_relations.example.json config/stock_relations.json
 python scripts/stock_relations.py --config config/stock_relations.json
 ```
 
-`config/stock_relations.json` is gitignored. Use it for personal holdings, supply-chain links, competitors, customers, upstream/downstream names, and theme mappings that should not be published.
+`config/stock_relations.json` is gitignored. Use it for personal holdings, supply-chain links, competitors, customers, upstream/downstream names, and theme mappings that should not be published. Mappings can be triggered by direct symbols as well as exact theme/name matches or sufficiently specific title/body context. The Web workbench also provides JSON import/export, diff checks, recent signal backfill, and a pending suggestion queue for future LLM- or analyst-derived mapping ideas.
 
 ## PR Automation
 
