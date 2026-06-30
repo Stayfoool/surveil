@@ -52,7 +52,6 @@ systemctl enable --now surveil-signals-extract.timer
 systemctl enable --now surveil-signal-outcome.timer
 systemctl enable --now surveil-signal-review.timer
 systemctl enable --now surveil-signal-digest.timer
-systemctl enable surveil-stock-relations-import.service
 systemctl start surveil-stock-relations-import.service || true
 systemctl enable --now surveil-rss-monitor.service
 systemctl enable --now surveil-trendforce-page-monitor.service

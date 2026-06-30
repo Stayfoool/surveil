@@ -44,7 +44,6 @@ SERVICE_UNITS = [
     "surveil-sina-flash.service",
     "surveil-holdings-web.service",
     "surveil-proxy.service",
-    "surveil-stock-relations-import.service",
 ]
 
 TIMER_UNITS = [
