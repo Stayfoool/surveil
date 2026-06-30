@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -11,7 +12,7 @@ from pathlib import Path
 from article_gate import ensure_article_reviews_table
 from market_db import init_db
 from official_news_gate import ensure_official_news_table
-from signal_outcome_update import compute_metrics, quote_rows_from_response
+from signal_outcome_update import compute_metrics, quote_rows_from_response, target_rows
 from signals_extract import extract_signals, target_from_text, x_targets
 
 
@@ -296,10 +297,24 @@ def test_bare_foreign_numeric_codes_do_not_become_a_share_symbols() -> None:
         conn.close()
 
 
+def test_outcome_target_rows_only_select_a_share_symbols() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        seed_db(path)
+        extract_signals(db_path=path, days=10, dry_run=False)
+        conn = init_db(path)
+        conn.row_factory = sqlite3.Row
+        rows = target_rows(conn, days=10, limit=None)
+        assert rows
+        assert all(str(row["symbol"]).endswith((".SZ", ".SH", ".BJ")) for row in rows)
+        conn.close()
+
+
 def main() -> int:
     test_extract_signals_from_existing_sources()
     test_outcome_metrics_from_ifind_like_response()
     test_bare_foreign_numeric_codes_do_not_become_a_share_symbols()
+    test_outcome_target_rows_only_select_a_share_symbols()
     print("signal extraction/outcome tests OK")
     return 0
 

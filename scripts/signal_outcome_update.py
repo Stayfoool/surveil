@@ -16,7 +16,7 @@ from db_utils import connect_sqlite
 from env_utils import load_env
 from ifind_client import IfindClient, IfindError, IfindNoDataError
 from market_db import DEFAULT_DB_PATH, init_db
-from signal_store import is_a_share_symbol, normalize_direction, normalize_symbol, upsert_outcome
+from signal_store import normalize_direction, normalize_symbol, upsert_outcome
 
 
 DEFAULT_INDICATORS = "close,preClose,amount,volume"
@@ -202,7 +202,11 @@ def target_rows(conn: sqlite3.Connection, days: int, limit: int | None) -> list[
         FROM signals s
         JOIN signal_targets t ON t.signal_id = s.id
         WHERE s.created_at >= ?
-          AND COALESCE(t.symbol, '') != ''
+          AND (
+            t.symbol LIKE '%.SZ'
+            OR t.symbol LIKE '%.SH'
+            OR t.symbol LIKE '%.BJ'
+          )
         ORDER BY s.created_at DESC, s.id DESC
     """
     params: list[Any] = [since]
@@ -229,19 +233,6 @@ def update_outcomes(*, db_path: Path, days: int, limit: int | None = None, dry_r
         counts["targets"] = len(rows)
         for row in rows:
             symbol = normalize_symbol(str(row["symbol"] or ""))
-            if not is_a_share_symbol(symbol):
-                counts["skipped"] += 1
-                if not dry_run:
-                    upsert_outcome(
-                        conn,
-                        signal_id=int(row["signal_id"]),
-                        target_id=int(row["target_id"]),
-                        symbol=symbol,
-                        as_of_date=datetime.now(timezone.utc).date().isoformat(),
-                        outcome_status="unsupported_market",
-                        outcome_json={"reason": "MVP only backfills A-share symbols"},
-                    )
-                continue
             start = published_date(str(row["published_at"] or "")) - timedelta(days=3)
             end = datetime.now(timezone.utc).date()
             if dry_run:
