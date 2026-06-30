@@ -87,9 +87,15 @@ def normalize_history_rows(response: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         symbol = str(table.get("thscode") or table.get("code") or "").strip().upper()
         table_data = table.get("table") if isinstance(table.get("table"), dict) else {}
-        row_count = max((len(value) for value in table_data.values() if isinstance(value, list)), default=0)
+        time_values = table.get("time") if isinstance(table.get("time"), list) else []
+        row_count = max(
+            [len(time_values), *((len(value) for value in table_data.values() if isinstance(value, list)))],
+            default=0,
+        )
         for index in range(row_count):
             row: dict[str, Any] = {"symbol": symbol}
+            if index < len(time_values):
+                row["time"] = time_values[index]
             for key, values in table_data.items():
                 if isinstance(values, list) and index < len(values):
                     row[key] = values[index]
