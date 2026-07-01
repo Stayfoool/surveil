@@ -86,6 +86,26 @@ LOG_FILES = [
     "stock-relations-import.err.log",
 ]
 
+SIGNAL_FEEDBACK_VERDICTS = {"hit", "partial", "miss", "too_early", "unverifiable"}
+SIGNAL_FEEDBACK_ERROR_TYPES = {
+    "stale_or_price_in",
+    "counter_supply_news",
+    "supply_expansion_bearish",
+    "wrong_relation",
+    "wrong_direction",
+    "timing_error",
+    "low_market_attention",
+    "quote_unavailable",
+    "window_not_ready",
+    "direction_uncertain",
+    "weak_follow_through",
+    "direction_or_relevance_error",
+    "timing_or_duration_error",
+    "none",
+    "unverifiable",
+    "other",
+}
+
 
 def env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name, "").strip()
@@ -371,12 +391,12 @@ def fetch_signal_rows(
             SELECT s.id, s.source, s.title, s.url, s.published_at, s.created_at,
                    s.importance, s.incremental_classification, s.direction,
                    s.confidence, s.thesis,
-                   t.symbol, t.name, t.target_role, t.relation_type, t.relation_reason,
+                   t.id AS target_id, t.symbol, t.name, t.target_role, t.relation_type, t.relation_reason,
                    t.expected_direction, t.confidence AS target_confidence,
                    o.as_of_date, o.return_1d, o.return_3d, o.return_5d, o.return_10d,
                    o.return_20d, o.max_drawdown, o.max_runup, o.volume_change,
                    o.outcome_status,
-                   r.verdict, r.error_type, r.review_text, r.lessons_json, r.created_at AS reviewed_at
+                   r.review_type, r.verdict, r.error_type, r.review_text, r.lessons_json, r.created_at AS reviewed_at
             FROM signals s
             LEFT JOIN signal_targets t ON t.signal_id = s.id
             LEFT JOIN latest_outcome lo ON lo.signal_id = s.id AND lo.symbol = t.symbol
@@ -390,6 +410,7 @@ def fetch_signal_rows(
         ):
             item = {
                 "id": row["id"],
+                "target_id": row["target_id"],
                 "source": row["source"] or "",
                 "title": row["title"] or "",
                 "url": row["url"] or "",
@@ -419,6 +440,7 @@ def fetch_signal_rows(
                 "max_runup": row["max_runup"],
                 "volume_change": row["volume_change"],
                 "outcome_status": row["outcome_status"] or "",
+                "review_type": row["review_type"] or "",
                 "verdict": row["verdict"] or "",
                 "error_type": row["error_type"] or "",
                 "review_text": row["review_text"] or "",
@@ -442,6 +464,103 @@ def fetch_signal_rows(
     return rows
 
 
+def save_signal_feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        signal_id = int(payload.get("signal_id") or 0)
+    except (TypeError, ValueError):
+        signal_id = 0
+    if signal_id <= 0:
+        raise HoldingsError("请求缺少有效 signal_id")
+
+    target_id_raw = payload.get("target_id")
+    target_id: int | None = None
+    if target_id_raw not in (None, ""):
+        try:
+            target_id = int(target_id_raw)
+        except (TypeError, ValueError):
+            target_id = None
+
+    verdict = str(payload.get("verdict") or "miss").strip().lower()
+    if verdict not in SIGNAL_FEEDBACK_VERDICTS:
+        raise HoldingsError("复盘结论无效")
+
+    error_type = str(payload.get("error_type") or "other").strip().lower()
+    if error_type not in SIGNAL_FEEDBACK_ERROR_TYPES:
+        error_type = "other"
+
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    review_text = str(payload.get("review_text") or "").strip()
+    if not review_text:
+        raise HoldingsError("请填写反馈原因")
+    if len(review_text) > 3000:
+        raise HoldingsError("反馈原因过长")
+
+    lessons_raw = payload.get("lessons")
+    if isinstance(lessons_raw, list):
+        lessons = [str(item).strip() for item in lessons_raw if str(item).strip()]
+    else:
+        lessons = [
+            item.strip()
+            for item in str(lessons_raw or "").replace("；", "\n").replace(";", "\n").splitlines()
+            if item.strip()
+        ]
+    if not lessons:
+        lessons = [review_text]
+    lessons = lessons[:8]
+
+    tags_raw = payload.get("tags")
+    tags = [str(item).strip() for item in tags_raw if str(item).strip()] if isinstance(tags_raw, list) else []
+    now = datetime.now(timezone.utc).isoformat()
+    lessons_json = {
+        "manual": True,
+        "symbol": symbol,
+        "target_id": target_id,
+        "lessons": lessons,
+        "feedback_tags": tags,
+        "user_feedback": review_text,
+        "created_from": "holdings_web",
+    }
+    with connect_sqlite(DEFAULT_DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        existing = conn.execute("SELECT id FROM signals WHERE id = ?", (signal_id,)).fetchone()
+        if not existing:
+            raise HoldingsError("signal_id 不存在")
+        if target_id is None and symbol:
+            target_row = conn.execute(
+                """
+                SELECT id FROM signal_targets
+                WHERE signal_id = ? AND UPPER(COALESCE(symbol, '')) = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (signal_id, symbol),
+            ).fetchone()
+            if target_row:
+                target_id = int(target_row["id"])
+                lessons_json["target_id"] = target_id
+        cur = conn.execute(
+            """
+            INSERT INTO signal_reviews (
+                signal_id, target_id, symbol, review_type, verdict, error_type, review_text,
+                lessons_json, model, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                signal_id,
+                target_id,
+                symbol,
+                "manual",
+                verdict,
+                error_type,
+                review_text,
+                json.dumps(lessons_json, ensure_ascii=False, sort_keys=True),
+                "human",
+                now,
+            ),
+        )
+        conn.commit()
+        return {"id": int(cur.lastrowid), "created_at": now}
+
+
 def fetch_signal_summary() -> dict[str, Any]:
     with connect_sqlite(DEFAULT_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -449,7 +568,7 @@ def fetch_signal_summary() -> dict[str, Any]:
             {"label": "信号", "value": count_rows(conn, "signals")},
             {"label": "影响标的", "value": count_rows(conn, "signal_targets")},
             {"label": "行情结果", "value": count_rows(conn, "signal_outcomes")},
-            {"label": "自动复盘", "value": count_rows(conn, "signal_reviews")},
+            {"label": "复盘记录", "value": count_rows(conn, "signal_reviews")},
             {"label": "关系映射", "value": count_rows(conn, "stock_relations", "enabled = 1")},
         ]
         verdicts = grouped_counts(conn, "signal_reviews", "verdict", "1=1", ())
@@ -824,6 +943,7 @@ def html_page(token_required: bool) -> str:
                 <th>信号/复盘</th>
                 <th style="width:120px">来源</th>
                 <th style="width:120px">关系</th>
+                <th style="width:86px">反馈</th>
               </tr>
             </thead>
             <tbody id="signalRows"></tbody>
@@ -1117,6 +1237,60 @@ def html_page(token_required: bool) -> str:
     </div>
   </div>
 
+  <div id="signalFeedbackModal" class="modal-backdrop">
+    <div class="modal">
+      <h2>修正复盘</h2>
+      <div class="body">
+        <div class="grid">
+          <div class="field">
+            <label>结论</label>
+            <select id="signalFeedbackVerdict">
+              <option value="miss">miss</option>
+              <option value="partial">partial</option>
+              <option value="hit">hit</option>
+              <option value="too_early">too_early</option>
+              <option value="unverifiable">unverifiable</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>错误类型</label>
+            <select id="signalFeedbackErrorType">
+              <option value="stale_or_price_in">旧闻/已定价</option>
+              <option value="counter_supply_news">后续反向消息</option>
+              <option value="supply_expansion_bearish">供给扩张利空</option>
+              <option value="wrong_relation">关联错误</option>
+              <option value="wrong_direction">方向错误</option>
+              <option value="timing_error">时点错误</option>
+              <option value="low_market_attention">关注度不足</option>
+              <option value="quote_unavailable">行情缺失</option>
+              <option value="window_not_ready">窗口未到</option>
+              <option value="direction_uncertain">方向不明</option>
+              <option value="weak_follow_through">持续性不足</option>
+              <option value="direction_or_relevance_error">方向或相关性错误</option>
+              <option value="timing_or_duration_error">时点或持有期错误</option>
+              <option value="none">无错误</option>
+              <option value="unverifiable">无法验证</option>
+              <option value="other">其他</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label>反馈原因</label>
+          <textarea id="signalFeedbackText" rows="5"></textarea>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label>经验</label>
+          <textarea id="signalFeedbackLessons" rows="4"></textarea>
+        </div>
+        <div id="signalFeedbackMeta" class="hint"></div>
+      </div>
+      <div class="foot">
+        <button onclick="closeSignalFeedback()">取消</button>
+        <button class="primary" onclick="saveSignalFeedback()">保存</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 let token = localStorage.getItem('surveil_holdings_token') || '';
 let holdings = [];
@@ -1125,6 +1299,8 @@ let loadedHoldings = false;
 let codeDefaultKeywords = [];
 let managedRelations = [];
 let editingRelationId = null;
+let signalRowsCache = [];
+let editingSignalFeedback = null;
 
 function headers() {{
   const h = {{'Content-Type': 'application/json'}};
@@ -1298,13 +1474,14 @@ async function loadSignals() {{
         <div class="value">${{escapeHtml(item.value)}}</div>
       </div>
     `).join('');
-    document.getElementById('signalRows').innerHTML = (data.signals || []).map(item => {{
+    signalRowsCache = data.signals || [];
+    document.getElementById('signalRows').innerHTML = signalRowsCache.map((item, index) => {{
       const returns = item.returns || {{}};
       const returnText = [`1d ${{formatPct(returns['1d'])}}`, `3d ${{formatPct(returns['3d'])}}`, `5d ${{formatPct(returns['5d'])}}`].join('<br>');
       const title = item.url ? `<a href="${{escapeHtml(item.url)}}" target="_blank" rel="noreferrer">${{escapeHtml(item.title || '')}}</a>` : escapeHtml(item.title || '');
       return `
         <tr>
-          <td>${{badge(item.verdict || item.outcome_status || '-')}}<div class="hint">${{escapeHtml(item.error_type || '')}}</div></td>
+          <td>${{badge(item.verdict || item.outcome_status || '-')}}<div class="hint">${{escapeHtml(item.error_type || '')}}</div><div class="hint">${{escapeHtml(item.review_type || '')}}</div></td>
           <td><strong>${{escapeHtml(item.symbol || item.name || '-')}}</strong><div class="hint">${{escapeHtml(item.name || '')}}</div></td>
           <td>${{returnText}}<div class="hint">runup ${{formatPct(item.max_runup)}} / dd ${{formatPct(item.max_drawdown)}}</div></td>
           <td class="summary-cell">
@@ -1314,9 +1491,10 @@ async function loadSignals() {{
           </td>
           <td>${{escapeHtml(item.source || '')}}<div>${{badge(item.importance || '')}}</div><div class="hint">${{formatTime(item.created_at)}}</div></td>
           <td>${{escapeHtml(item.target_role || '')}}<div class="hint">${{escapeHtml(shortText(item.relation_type || item.relation_reason || '', 120))}}</div></td>
+          <td><button onclick="openSignalFeedback(${{index}})">修正</button></td>
         </tr>
       `;
-    }}).join('') || '<tr><td colspan="6">没有匹配信号。</td></tr>';
+    }}).join('') || '<tr><td colspan="7">没有匹配信号。</td></tr>';
     const scores = ((data.summary || {{}}).source_scores || []);
     document.getElementById('signalSourceScores').innerHTML = ['<div class="list-row"><strong>来源评分（近 30 日）</strong></div>', ...scores.map(item => `
       <div class="list-row">
@@ -1326,6 +1504,49 @@ async function loadSignals() {{
       </div>
     `)].join('');
     await loadRelations();
+  }} catch (err) {{
+    showStatus(err.message, 'err');
+  }}
+}}
+
+function openSignalFeedback(index) {{
+  const item = signalRowsCache[index];
+  if (!item) return;
+  editingSignalFeedback = item;
+  document.getElementById('signalFeedbackVerdict').value = item.verdict || 'miss';
+  document.getElementById('signalFeedbackErrorType').value = item.error_type || 'stale_or_price_in';
+  document.getElementById('signalFeedbackText').value = item.review_text || '';
+  let lessons = '';
+  try {{
+    const parsed = item.lessons_json ? JSON.parse(item.lessons_json) : {{}};
+    if (Array.isArray(parsed.lessons)) lessons = parsed.lessons.join('\n');
+  }} catch (err) {{}}
+  document.getElementById('signalFeedbackLessons').value = lessons;
+  document.getElementById('signalFeedbackMeta').textContent = `${{item.symbol || '-'}} / ${{item.title || ''}}`;
+  document.getElementById('signalFeedbackModal').style.display = 'flex';
+}}
+
+function closeSignalFeedback() {{
+  editingSignalFeedback = null;
+  document.getElementById('signalFeedbackModal').style.display = 'none';
+}}
+
+async function saveSignalFeedback() {{
+  if (!editingSignalFeedback) return;
+  try {{
+    const payload = {{
+      signal_id: editingSignalFeedback.id,
+      target_id: editingSignalFeedback.target_id || null,
+      symbol: editingSignalFeedback.symbol || '',
+      verdict: document.getElementById('signalFeedbackVerdict').value,
+      error_type: document.getElementById('signalFeedbackErrorType').value,
+      review_text: document.getElementById('signalFeedbackText').value.trim(),
+      lessons: document.getElementById('signalFeedbackLessons').value.trim()
+    }};
+    await api('/api/signal-feedback', {{method: 'POST', body: JSON.stringify(payload)}});
+    closeSignalFeedback();
+    await loadSignals();
+    showStatus('已保存人工复盘反馈。');
   }} catch (err) {{
     showStatus(err.message, 'err');
   }}
@@ -2159,6 +2380,11 @@ class HoldingsHandler(BaseHTTPRequestHandler):
                 if not isinstance(values, dict):
                     raise HoldingsError("请求缺少 values 对象")
                 saved = save_settings(values)
+                saved["ok"] = True
+                self.send_json(saved)
+                return
+            if parsed.path == "/api/signal-feedback":
+                saved = save_signal_feedback(payload)
                 saved["ok"] = True
                 self.send_json(saved)
                 return

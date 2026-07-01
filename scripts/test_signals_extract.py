@@ -683,6 +683,78 @@ def test_signal_review_classification_and_insert() -> None:
         conn.close()
 
 
+def test_signal_review_low_attention_lesson_is_cautious() -> None:
+    row = {
+        "outcome_status": "partial_5d",
+        "expected_direction": "positive",
+        "signal_direction": "positive",
+        "return_1d": -2.95,
+        "return_3d": 0.08,
+        "return_5d": -7.94,
+        "return_10d": None,
+        "return_20d": None,
+        "max_drawdown": -10.0,
+        "max_runup": 0.5,
+        "volume_change": -10.3,
+    }
+    review = classify_review(row)  # type: ignore[arg-type]
+    assert review["verdict"] == "miss"
+    assert review["error_type"] == "low_market_attention"
+    assert "旧闻/已 price in" in review["lessons"][0]
+    assert "供给扩张" in review["lessons"][0]
+
+
+def test_manual_signal_feedback_insert() -> None:
+    import holdings_web
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        seed_db(path)
+        extract_signals(db_path=path, days=10, dry_run=False)
+        conn = init_db(path)
+        signal_id, target_id = conn.execute(
+            """
+            SELECT s.id, t.id
+            FROM signals s JOIN signal_targets t ON t.signal_id = s.id
+            WHERE t.symbol = '000725.SZ'
+            ORDER BY s.id LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+
+        original_db_path = holdings_web.DEFAULT_DB_PATH
+        try:
+            holdings_web.DEFAULT_DB_PATH = path
+            saved = holdings_web.save_signal_feedback(
+                {
+                    "signal_id": signal_id,
+                    "target_id": target_id,
+                    "symbol": "000725.SZ",
+                    "verdict": "miss",
+                    "error_type": "stale_or_price_in",
+                    "review_text": "新闻发布时间太晚，且后续供给扩张改变了方向。",
+                    "lessons": "先检查是否旧闻/已定价\n再检查是否有供给扩张等反向新闻",
+                }
+            )
+        finally:
+            holdings_web.DEFAULT_DB_PATH = original_db_path
+        assert saved["id"] > 0
+        conn = init_db(path)
+        row = conn.execute(
+            """
+            SELECT review_type, verdict, error_type, model, lessons_json
+            FROM signal_reviews
+            WHERE id = ?
+            """,
+            (saved["id"],),
+        ).fetchone()
+        assert row[:4] == ("manual", "miss", "stale_or_price_in", "human")
+        lessons = json.loads(row[4])
+        assert lessons["manual"] is True
+        assert lessons["lessons"][0].startswith("先检查")
+        conn.close()
+
+
 def main() -> int:
     test_extract_signals_from_existing_sources()
     test_outcome_metrics_from_ifind_like_response()
@@ -693,6 +765,8 @@ def main() -> int:
     test_theme_context_expands_signal_targets()
     test_market_skill_import_and_signal_enrichment()
     test_signal_review_classification_and_insert()
+    test_signal_review_low_attention_lesson_is_cautious()
+    test_manual_signal_feedback_insert()
     print("signal extraction/outcome tests OK")
     return 0
 
