@@ -30,6 +30,9 @@ FED_EVENT_KEYWORDS = (
     "federal reserve",
     "fed",
     "fomc",
+    "沃什",
+    "沃尔什",
+    "warsh",
     "鲍威尔",
     "powell",
     "主席讲话",
@@ -136,7 +139,7 @@ def macro_policy_match(item: dict[str, Any]) -> dict[str, Any]:
             "matched": True,
             "tier": "primary",
             "push_bias": "high",
-            "reason": "命中美联储/FOMC/鲍威尔或非农、CPI、PCE 等核心宏观事件。",
+            "reason": "命中美联储/FOMC/现任主席沃什、前主席鲍威尔相关报道，或非农、CPI、PCE 等核心宏观事件。",
             "tags": [
                 tag
                 for tag, ok in (
@@ -205,7 +208,7 @@ def apply_macro_review_override(review: dict[str, Any], item: dict[str, Any]) ->
             targets.append(target)
     updated["affected_targets"] = targets[:5]
     note = (
-        "宏观政策线覆盖：该条涉及美联储/FOMC/鲍威尔、非农/CPI/PCE，"
+        "宏观政策线覆盖：该条涉及美联储/FOMC/主席沃什、前主席鲍威尔、非农/CPI/PCE，"
         "或次重点数据的重大偏离/市场反应；按对 A 股风险偏好和成长股估值的影响优先处理。"
     )
     reason = str(updated.get("reason") or "").strip()

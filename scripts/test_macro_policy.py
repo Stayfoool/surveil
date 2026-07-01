@@ -9,7 +9,14 @@ from sina_flash import event_from_row
 
 
 def test_primary_macro_events_match_without_market_move() -> None:
-    item = {"title": "今晚21:00美联储主席鲍威尔将发表讲话，市场关注降息路径"}
+    item = {"title": "今晚21:00美联储主席沃什将发表讲话，市场关注降息路径"}
+    match = macro_policy_match(item)
+    assert match["matched"] is True
+    assert match["tier"] == "primary"
+
+
+def test_former_chair_powell_still_matches_when_relevant() -> None:
+    item = {"title": "前美联储主席鲍威尔评论通胀前景，2年期美债收益率大跌"}
     match = macro_policy_match(item)
     assert match["matched"] is True
     assert match["tier"] == "primary"
@@ -47,7 +54,7 @@ def test_macro_review_override_pushes_primary_events() -> None:
 
 def test_china_media_focus_accepts_macro_items() -> None:
     item = {
-        "title": "鲍威尔讲话后，2年期美债收益率大跌",
+        "title": "沃什讲话后，2年期美债收益率大跌",
         "summary": "市场重新定价美联储降息路径。",
         "full_text": "",
     }
@@ -57,7 +64,7 @@ def test_china_media_focus_accepts_macro_items() -> None:
 def test_sina_flash_macro_event_without_holdings_match() -> None:
     row = {
         "id": "macro-1",
-        "rich_text": "美联储主席鲍威尔讲话后，2年期美债收益率大跌，美元指数走弱。",
+        "rich_text": "美联储主席沃什讲话后，2年期美债收益率大跌，美元指数走弱。",
         "create_time": "2026-07-01 21:05:00",
         "ext": "{}",
     }
@@ -70,6 +77,7 @@ def test_sina_flash_macro_event_without_holdings_match() -> None:
 
 def main() -> int:
     test_primary_macro_events_match_without_market_move()
+    test_former_chair_powell_still_matches_when_relevant()
     test_nonfarm_cpi_pce_are_primary()
     test_secondary_data_requires_surprise_or_market_reaction()
     test_retail_sales_is_ignored()
