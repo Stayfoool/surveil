@@ -290,6 +290,112 @@ def normalize_skeptic(parsed: dict[str, Any], *, fallback: dict[str, Any]) -> di
     }
 
 
+def text_blob(*values: Any) -> str:
+    return "\n".join(str(value or "") for value in values)
+
+
+def contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    lower = text.lower()
+    return any(keyword.lower() in lower for keyword in keywords)
+
+
+def has_quantified_hard_variable(text: str) -> bool:
+    lower = text.lower()
+    amount_patterns = (
+        r"\d+(?:\.\d+)?\s*(?:亿|万亿|兆)\s*(?:韩元|美元|人民币|元)?",
+        r"\d+(?:\.\d+)?\s*(?:billion|bn|million|trillion)\s*(?:won|usd|dollars|rmb|yuan)?",
+        r"\d+(?:\.\d+)?\s*(?:台|套|条|座|家|%|％)",
+    )
+    return any(re.search(pattern, lower, flags=re.IGNORECASE) for pattern in amount_patterns)
+
+
+def is_hbm_industry_hard_variable(item: dict[str, Any], review: dict[str, Any]) -> bool:
+    """Protect quantified HBM/storage capex or equipment events from over-downgrade.
+
+    This is intentionally narrow: the original gate must already judge the item as high
+    importance. The override only prevents the skeptic from suppressing industry-level
+    hard variables just because the direct A-share supplier is still unconfirmed.
+    """
+    original_importance = str(review.get("pre_skeptic_importance") or review.get("importance") or "").lower()
+    if original_importance != "high":
+        return False
+    text = text_blob(
+        item.get("title"),
+        item.get("summary"),
+        item.get("content"),
+        item.get("full_text"),
+        review.get("market_impact"),
+        review.get("reason"),
+        review.get("daily_summary"),
+    )
+    if not contains_any(text, ("hbm", "hbm3", "hbm3e", "hbm4", "hbm4e", "高带宽内存", "高頻寬記憶體")):
+        return False
+    if not contains_any(text, ("sk海力士", "sk hynix", "海力士", "三星", "samsung", "美光", "micron", "存储大厂", "記憶體大廠")):
+        return False
+    if not contains_any(
+        text,
+        (
+            "采购",
+            "訂購",
+            "订购",
+            "订单",
+            "設備",
+            "设备",
+            "测试",
+            "檢測",
+            "检测",
+            "tester",
+            "test equipment",
+            "封装",
+            "封測",
+            "封测",
+            "扩产",
+            "擴產",
+            "capex",
+            "capital expenditure",
+            "投资",
+            "工厂",
+            "fab",
+        ),
+    ):
+        return False
+    return has_quantified_hard_variable(text)
+
+
+def apply_industry_hard_variable_override(updated: dict[str, Any], *, item: dict[str, Any], push_key: str) -> dict[str, Any]:
+    if not is_hbm_industry_hard_variable(item, updated):
+        return updated
+    skeptic = updated.get("skeptic") if isinstance(updated.get("skeptic"), dict) else {}
+    if not skeptic or str(skeptic.get("skeptic_verdict") or "pass") == "block":
+        return updated
+    restored = dict(updated)
+    restored[push_key] = True
+    restored["importance"] = "high"
+    restored["industry_hard_variable_override"] = True
+    restored["daily_summary"] = (
+        str(restored.get("daily_summary") or "").strip()
+        or "HBM/HBM4 产业链出现带金额或数量的设备、测试、封装或扩产硬变量，供应商待确认。"
+    )
+    note = (
+        "产业硬变量覆盖：HBM/HBM4 相关存储龙头出现明确金额或数量的设备、测试、封装或扩产信息，"
+        "即使供应商或 A 股映射待确认，也保留即时推送，并标注“受益标的待确认”。"
+    )
+    reason = str(restored.get("reason") or "").strip()
+    if note not in reason:
+        restored["reason"] = f"{reason}\n{note}".strip()
+    targets = list(restored.get("affected_targets") or [])
+    for target in ("HBM/HBM4 测试设备", "半导体后道测试", "受益标的待确认"):
+        if target not in targets:
+            targets.append(target)
+    restored["affected_targets"] = targets[:5]
+    skeptic = dict(skeptic)
+    skeptic["industry_hard_variable_override"] = True
+    skeptic["final_push_suggestion_before_override"] = skeptic.get("final_push_suggestion")
+    skeptic["final_push_suggestion"] = "push_now"
+    restored["skeptic"] = skeptic
+    return restored
+
+
 def llm_skeptic_review(
     *,
     source: str,
@@ -369,6 +475,7 @@ def apply_skeptic_review(
         updated["pre_skeptic_importance"] = updated.get("importance", "")
         updated["importance"] = "low"
         updated["skeptic_blocked"] = True
+    updated = apply_industry_hard_variable_override(updated, item=item, push_key=push_key)
     return updated
 
 

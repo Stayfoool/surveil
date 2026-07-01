@@ -162,11 +162,65 @@ def test_skeptic_llm_failure_records_health_without_blocking() -> None:
         conn.close()
 
 
+def test_hbm_hard_variable_override_keeps_push_now() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        conn = init_db(path)
+        original_llm = skeptic_evaluator.llm_skeptic_review
+
+        def fake_llm(**_kwargs):
+            return {
+                "skeptic_verdict": "downgrade",
+                "old_news_risk": "medium",
+                "price_in_risk": "high",
+                "over_linking_risk": "high",
+                "hard_variable_score": 30,
+                "relation_strength_score": 20,
+                "reason": "未披露具体 A 股供应商，存在 price in 风险。",
+                "what_would_change_mind": "需要明确供应商。",
+                "final_push_suggestion": "daily",
+                "mode": "fake",
+            }
+
+        review = {
+            "importance": "high",
+            "push_now": True,
+            "market_impact": "利好 HBM4 测试设备和半导体后道测试环节。",
+            "incremental_classification": "增量利好",
+            "affected_targets": ["半导体设备"],
+            "reason": "SK海力士拟采购 HBM4 测试仪，总投资最高 4000亿韩元。",
+            "daily_summary": "SK海力士拟订购 HBM4 测试仪。",
+            "confidence": "中",
+        }
+        item = {
+            "id": "hbm4-testers",
+            "url": "https://example.com/hbm4-testers",
+            "title": "SK海力士拟订购逾200台HBM4测试仪 总价最高可达4000亿韩元",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "summary": "清州封装工厂采购约200台检测设备，涵盖下一代高带宽内存HBM4测试仪。",
+            "full_text": "SK海力士正推进清州封装工厂检测设备采购谈判，预计采购规模达200台，重点涵盖HBM4测试仪，总投资额最高可达4000亿韩元。",
+        }
+        try:
+            skeptic_evaluator.llm_skeptic_review = fake_llm
+            updated = apply_skeptic_review(conn, source="cls_telegraph_api", item=item, review=review, push_key="push_now")
+        finally:
+            skeptic_evaluator.llm_skeptic_review = original_llm
+
+        assert updated["push_now"] is True
+        assert updated["importance"] == "high"
+        assert updated["industry_hard_variable_override"] is True
+        assert updated["skeptic"]["industry_hard_variable_override"] is True
+        assert "受益标的待确认" in updated["affected_targets"]
+        assert "产业硬变量覆盖" in updated["reason"]
+        conn.close()
+
+
 def main() -> int:
     test_skeptic_downgrades_duplicate_article()
     test_official_review_preserves_skeptic_metadata()
     test_history_candidates_respects_cutoff()
     test_skeptic_llm_failure_records_health_without_blocking()
+    test_hbm_hard_variable_override_keeps_push_now()
     print("skeptic evaluator tests OK")
     return 0
 
