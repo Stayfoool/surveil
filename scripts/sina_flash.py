@@ -19,6 +19,7 @@ from db_utils import connect_sqlite
 from env_utils import load_env
 from event_pipeline import analyze_event, content_hash, load_enabled_holdings, maybe_deliver_event, upsert_event
 from http_utils import http_get
+from macro_policy import macro_policy_match
 from market_db import DEFAULT_DB_PATH, init_db
 from portfolio_import import import_holdings
 from sina_zy_client import client_from_env, result_data
@@ -189,7 +190,8 @@ def event_from_row(row: dict[str, Any], holdings: list[dict[str, Any]]) -> dict[
     ext = parse_ext(row.get("ext"))
     ext_symbols = stock_symbols_from_ext(ext)
     matched = match_holdings(text, ext_symbols, holdings)
-    if not matched:
+    macro_match = macro_policy_match({"title": text, "summary": text, "full_text": text})
+    if not matched and not macro_match.get("matched"):
         return None
     symbols = [str(holding.get("symbol") or "").upper() for holding in matched if holding.get("symbol")]
     title = text[:80]
@@ -207,8 +209,8 @@ def event_from_row(row: dict[str, Any], holdings: list[dict[str, Any]]) -> dict[
         "url": SINA_REFERER,
         "published_at": published_at,
         "symbols": symbols,
-        "themes": ["新浪财经快讯"],
-        "raw": slim_raw(row, ext),
+        "themes": ["新浪财经快讯", "宏观流动性/美联储政策"] if macro_match.get("matched") else ["新浪财经快讯"],
+        "raw": {**slim_raw(row, ext), "macro_policy_line": macro_match if macro_match.get("matched") else {}},
         "content_hash": content_hash(SOURCE, source_id, text, published_at),
     }
 
@@ -254,8 +256,7 @@ def run_once(*, dry_run: bool = False, limit: int | None = None) -> int:
     import_holdings(DEFAULT_CONFIG_PATH, DEFAULT_DB_PATH)
     holdings = load_enabled_holdings(DEFAULT_DB_PATH)
     if not holdings:
-        print("没有启用的持仓，新浪快讯跳过。")
-        return 0
+        print("没有启用的持仓，新浪快讯仍会处理宏观政策线事件。")
 
     state = load_state()
     notify_baseline = os.getenv("SURVEIL_NOTIFY_BASELINE", "").strip() == "1"
