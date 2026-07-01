@@ -39,6 +39,7 @@ jobs:
           python scripts/test_rss_monitor_fetch.py
           python scripts/test_gate_prompts.py
           python scripts/test_sina_zy_client.py
+          python scripts/test_industry_hardline.py
           python scripts/test_time_utils.py
           python scripts/test_x_stream_health.py
           python scripts/test_skeptic_evaluator.py

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from llm_analysis import call_chat_completion_with_prompts, llm_config
+from industry_hardline import apply_hardline_review_override, explain_hardline
 from skeptic_evaluator import skeptic_lines
 
 
@@ -155,12 +156,16 @@ def failed_review(item: dict[str, Any], error: Exception) -> dict[str, Any]:
 
 def review_article(source: str, item: dict[str, Any]) -> dict[str, Any]:
     text = str(item.get("full_text") or item.get("content") or item.get("summary") or "").strip()
+    hardline_note = explain_hardline(source, (item.get("title"), item.get("summary"), text))
+    content = text[:6000]
+    if hardline_note:
+        content = f"【产业硬变量线提示】{hardline_note}\n\n{content}"
     user_prompt = (
         GATE_USER_PROMPT.replace("{source}", source)
         .replace("{source_module}", str(item.get("source_module") or item.get("source_display") or ""))
         .replace("{title}", str(item.get("title") or ""))
         .replace("{published_at}", str(item.get("published_at") or ""))
-        .replace("{content}", text[:6000])
+        .replace("{content}", content)
     )
     parsed, model = call_chat_completion_with_prompts(
         GATE_SYSTEM_PROMPT,
@@ -225,6 +230,10 @@ def save_review(conn: sqlite3.Connection, source: str, item: dict[str, Any], rev
         ),
     )
     conn.commit()
+
+
+def apply_hardline_override(source: str, item: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    return apply_hardline_review_override(source, item, review)
 
 
 def review_exists(conn: sqlite3.Connection, source: str, item_id: str) -> dict[str, Any] | None:

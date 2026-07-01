@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from llm_analysis import call_chat_completion_with_prompts, format_llm_analysis, llm_config
+from industry_hardline import apply_hardline_review_override, explain_hardline
 from skeptic_evaluator import skeptic_lines
 
 
@@ -231,6 +232,9 @@ def normalize_review(parsed: dict[str, Any]) -> dict[str, Any]:
 def review_official_news(source: str, item: dict[str, Any]) -> dict[str, Any]:
     text = str(item.get("full_text") or item.get("content") or item.get("summary") or "").strip()
     title = str(item.get("title") or "").strip()
+    hardline_note = explain_hardline(source, (title, text, item.get("source_module")))
+    if hardline_note:
+        text = f"【产业硬变量线提示】{hardline_note}\n\n{text}"
     user_prompt = (
         GATE_USER_PROMPT.replace("{source}", source)
         .replace("{title}", title)
@@ -248,6 +252,10 @@ def review_official_news(source: str, item: dict[str, Any]) -> dict[str, Any]:
     review = normalize_review(parsed)
     review["model"] = model
     return review
+
+
+def apply_official_hardline_override(source: str, item: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    return apply_hardline_review_override(source, item, review)
 
 
 def analysis_lines_from_review(review: dict[str, Any]) -> list[str]:

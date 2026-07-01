@@ -20,6 +20,7 @@ import feedparser
 import trafilatura
 
 from article_gate import (
+    apply_hardline_override as apply_article_hardline_override,
     article_gate_enabled,
     article_item_id,
     failed_review,
@@ -29,6 +30,7 @@ from article_gate import (
     review_exists as article_review_exists,
     save_review as save_article_review,
 )
+from official_news_gate import apply_official_hardline_override
 from cards import build_article_card
 from db_utils import connect_sqlite, ensure_seen_tables, ensure_source_state_table, retry_on_locked
 from feishu import send_card
@@ -380,6 +382,7 @@ def notify_item(source: str, item: dict) -> None:
                 print(f"{source} 文章门控失败：{exc}", flush=True)
                 review = failed_review(item, exc)
             with connect_db() as conn:
+                review = apply_article_hardline_override(source, item, review)
                 review = apply_skeptic_review(conn, source=source, item=item, review=review, push_key="push_now")
                 save_article_review(conn, source, item, review)
         print(
@@ -418,6 +421,7 @@ def handle_official_news_item(source: str, item: dict) -> None:
     else:
         review = review_official_news(source, enriched)
         with connect_db() as conn:
+            review = apply_official_hardline_override(source, enriched, review)
             review = apply_skeptic_review(
                 conn,
                 source=source,

@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from article_gate import (
+    apply_hardline_override as apply_article_hardline_override,
     article_gate_enabled,
     article_item_id,
     failed_review,
@@ -413,6 +414,7 @@ def notify_item(item: dict) -> None:
                 print(f"{enriched.get('page_source') or PAGE_SOURCE_KEY} 文章门控失败：{exc}", flush=True)
                 review = failed_review(enriched, exc)
             with connect_db() as conn:
+                review = apply_article_hardline_override(PAGE_SOURCE_KEY, enriched, review)
                 review = apply_skeptic_review(
                     conn,
                     source=PAGE_SOURCE_KEY,
