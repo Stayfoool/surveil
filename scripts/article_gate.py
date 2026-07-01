@@ -10,6 +10,7 @@ from typing import Any
 
 from llm_analysis import call_chat_completion_with_prompts, llm_config
 from industry_hardline import apply_hardline_review_override, explain_hardline
+from macro_policy import apply_macro_review_override, macro_prompt_note
 from skeptic_evaluator import skeptic_lines
 
 
@@ -157,7 +158,10 @@ def failed_review(item: dict[str, Any], error: Exception) -> dict[str, Any]:
 def review_article(source: str, item: dict[str, Any]) -> dict[str, Any]:
     text = str(item.get("full_text") or item.get("content") or item.get("summary") or "").strip()
     hardline_note = explain_hardline(source, (item.get("title"), item.get("summary"), text))
+    macro_note = macro_prompt_note(item)
     content = text[:6000]
+    if macro_note:
+        content = f"【宏观政策线提示】{macro_note}\n\n{content}"
     if hardline_note:
         content = f"【产业硬变量线提示】{hardline_note}\n\n{content}"
     user_prompt = (
@@ -234,6 +238,10 @@ def save_review(conn: sqlite3.Connection, source: str, item: dict[str, Any], rev
 
 def apply_hardline_override(source: str, item: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
     return apply_hardline_review_override(source, item, review)
+
+
+def apply_macro_override(item: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    return apply_macro_review_override(review, item)
 
 
 def review_exists(conn: sqlite3.Connection, source: str, item_id: str) -> dict[str, Any] | None:

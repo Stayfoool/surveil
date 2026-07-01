@@ -19,6 +19,7 @@ from typing import Any, Iterable
 import feedparser
 
 from article_gate import (
+    apply_macro_override,
     article_gate_enabled,
     article_item_id,
     failed_review,
@@ -42,6 +43,7 @@ from env_utils import load_env
 from feishu import send_card
 from http_utils import http_get
 from llm_analysis import llm_config
+from macro_policy import is_macro_event
 from media_keyword_config import is_media_focus_item
 from rss_monitor import DB_PATH, fetch_article_body, parse_date, strip_tags
 from source_backoff import backoff_state_after_failure, clear_backoff_state, should_skip_by_backoff
@@ -461,6 +463,8 @@ def save_new_items_with_retry(
 
 
 def should_focus_item(item: dict[str, Any]) -> bool:
+    if is_macro_event(item):
+        return True
     return is_media_focus_item(
         str(item.get("title") or ""),
         str(item.get("summary") or ""),
@@ -509,6 +513,7 @@ def notify_item(source: str, item: dict[str, Any]) -> None:
                 print(f"{source} 文章门控失败：{exc}", flush=True)
                 review = failed_review(enriched, exc)
             with connect_db() as conn:
+                review = apply_macro_override(enriched, review)
                 review = apply_skeptic_review(
                     conn,
                     source=source,
