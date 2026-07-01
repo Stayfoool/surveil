@@ -133,7 +133,9 @@ def classify_review(row: sqlite3.Row) -> dict[str, Any]:
             lessons.append("盘中或短窗口曾有反应，但持有窗口判断偏长。")
         elif volume_change is not None and volume_change < 20:
             error_type = "low_market_attention"
-            lessons.append("成交额未明显放大，市场可能没有把该事件当作核心变量。")
+            lessons.append(
+                "成交额未明显放大只是表象；需人工复查是否旧闻/已 price in，或被后续供给扩张、竞品、政策等反向信息覆盖。"
+            )
         else:
             error_type = "direction_or_relevance_error"
             lessons.append("需要复查事件增量性、标的关联关系和是否已有预期。")

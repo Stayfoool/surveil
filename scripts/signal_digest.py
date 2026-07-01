@@ -69,16 +69,22 @@ def fetch_new_signals(conn: sqlite3.Connection, start_utc: str, end_utc: str) ->
 def fetch_reviews(conn: sqlite3.Connection, start_utc: str, end_utc: str) -> list[sqlite3.Row]:
     if not table_exists(conn, "signal_reviews"):
         return []
-    return list(
+    rows = list(
         conn.execute(
             """
-            SELECT r.signal_id, r.verdict, r.error_type, r.review_text, r.lessons_json, r.created_at,
+            WITH latest_review AS (
+                SELECT signal_id, COALESCE(symbol, '') AS symbol, MAX(id) AS review_id
+                FROM signal_reviews
+                WHERE created_at >= ? AND created_at < ?
+                GROUP BY signal_id, COALESCE(symbol, '')
+            )
+            SELECT r.signal_id, r.review_type, r.verdict, r.error_type, r.review_text, r.lessons_json, r.created_at,
                    s.source, s.title, s.url, s.importance
-            FROM signal_reviews r
+            FROM latest_review lr
+            JOIN signal_reviews r ON r.id = lr.review_id
             JOIN signals s ON s.id = r.signal_id
-            WHERE r.created_at >= ? AND r.created_at < ?
-              AND r.review_type = 'signal-review-rules-v1'
             ORDER BY
+              CASE r.review_type WHEN 'manual' THEN 0 ELSE 1 END,
               CASE r.verdict WHEN 'miss' THEN 0 WHEN 'partial' THEN 1 WHEN 'hit' THEN 2 ELSE 3 END,
               r.created_at DESC
             LIMIT 20
@@ -86,6 +92,7 @@ def fetch_reviews(conn: sqlite3.Connection, start_utc: str, end_utc: str) -> lis
             (start_utc, end_utc),
         ).fetchall()
     )
+    return rows
 
 
 def fetch_source_scores(conn: sqlite3.Connection, window_days: int = 30) -> list[sqlite3.Row]:
@@ -181,7 +188,7 @@ def build_card(
                 "\n".join(
                     [
                         f"- {row_url_title(row)}",
-                        f"  结论：{md_escape(str(row['verdict'] or ''))}；错误类型：{md_escape(str(row['error_type'] or ''))}",
+                        f"  结论：{md_escape(str(row['verdict'] or ''))}；错误类型：{md_escape(str(row['error_type'] or ''))}；复盘类型：{md_escape(str(row['review_type'] or ''))}",
                         f"  {md_escape(str(row['review_text'] or ''))}",
                         f"  经验：{md_escape(lesson_text or '-')}",
                     ]
