@@ -15,6 +15,7 @@ from db_utils import connect_sqlite
 from env_utils import load_env
 from market_db import DEFAULT_DB_PATH, init_db
 from pipeline_health import record_pipeline_failure, record_pipeline_success
+from market_skills import evidence_from_matches, match_market_skills, targets_from_matches
 from signal_store import (
     PROMPT_VERSION,
     json_loads,
@@ -278,6 +279,45 @@ def expand_related_targets(
         return targets
     related = related_targets_for_context(conn, trigger_values=triggers, context_text=context_text, max_per_trigger=4)
     return dedupe_targets([*targets, *related])
+
+
+def market_skill_context(
+    signal: dict[str, Any],
+    targets: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> str:
+    target_text = " ".join(
+        str(target.get("symbol") or target.get("name") or target.get("theme") or "")
+        for target in targets
+    )
+    evidence_text = "\n".join(str(item.get("text") or "") for item in evidence[:5])
+    raw = signal.get("raw") if isinstance(signal.get("raw"), dict) else {}
+    return "\n".join(
+        str(part or "")
+        for part in [
+            signal.get("title"),
+            signal.get("thesis"),
+            signal.get("invalidation"),
+            target_text,
+            evidence_text,
+            json.dumps(raw, ensure_ascii=False)[:2000],
+        ]
+    )
+
+
+def apply_market_skill_enrichment(
+    conn: sqlite3.Connection,
+    signal: dict[str, Any],
+    targets: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    context = market_skill_context(signal, targets, evidence)
+    matches = match_market_skills(conn, context, max_matches=3)
+    if not matches:
+        return targets, evidence
+    skill_targets = targets_from_matches(matches)
+    skill_evidence = evidence_from_matches(matches)
+    return dedupe_targets([*targets, *skill_targets]), [*evidence, *skill_evidence]
 
 
 def event_targets(
@@ -775,6 +815,7 @@ def extract_signals(*, db_path: Path, days: int, dry_run: bool = False) -> dict[
                 candidates.append(("seen_posts", extracted))
 
         for source_table, (signal, targets, evidence) in candidates:
+            targets, evidence = apply_market_skill_enrichment(conn, signal, targets, evidence)
             if dry_run:
                 print(
                     f"[dry-run] {source_table} {signal['source']} {signal['importance']} "

@@ -228,10 +228,12 @@ MarketPulseWire can turn high-importance alerts into traceable signal records fo
 - `signal_outcomes`: post-event price reaction metrics
 - `signal_reviews`: automatic hit/miss/partial/too-early reviews
 - `stock_relations`: optional private supply-chain/competitor/customer relation mappings
+- `market_skills`: optional private reusable investment reasoning maps, such as event -> chain -> affected segment patterns distilled from authorized notes
 
 Manual commands:
 
 ```bash
+python scripts/market_skills.py --skill-dir /path/to/market_skill
 python scripts/signals_extract.py --days 14
 python scripts/signal_outcome_update.py --days 45
 python scripts/signal_review.py --days 60
@@ -250,6 +252,15 @@ python scripts/stock_relations.py --config config/stock_relations.json
 ```
 
 `config/stock_relations.json` is gitignored. Use it for personal holdings, supply-chain links, competitors, customers, upstream/downstream names, and theme mappings that should not be published. Mappings can be triggered by direct symbols as well as exact theme/name matches or sufficiently specific title/body context. The Web workbench also provides JSON import/export, diff checks, recent signal backfill, and a pending suggestion queue for future LLM- or analyst-derived mapping ideas.
+
+Market skill notes are also private by default. Put a reusable skill directory under `config/market_skill/`, or set `MARKET_SKILL_DIR`, then import it:
+
+```bash
+MARKET_SKILL_DIR=/path/to/market_skill python scripts/market_skills.py
+python scripts/market_skills.py --skill-dir /path/to/market_skill --match "Rubin HBM PCB MLCC"
+```
+
+`market_skill` records do not directly change push gates or become stock relation facts. During signal extraction they can add `skill_inferred` targets and `market_skill` evidence, so the later review loop can verify whether a reasoning pattern was useful.
 
 ### Skeptic Evaluator
 

@@ -10,6 +10,7 @@ docs/monitoring-plan.md
 config/portfolio.json
 config/media_keywords.json
 config/stock_relations.json
+config/market_skill/
 data/
 logs/
 reports/
