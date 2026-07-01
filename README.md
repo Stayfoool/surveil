@@ -9,7 +9,7 @@ MarketPulseWire is not an investment adviser and does not generate buy/sell reco
 Market-moving semiconductor and AI infrastructure signals are scattered across X, sell-side-style research headlines, official company blogs, regional supply-chain media, company notices, and paid/authorized data services. MarketPulseWire turns that messy stream into a self-hosted research radar:
 
 - Track your own holdings and adjacent supply-chain names.
-- Watch high-signal sources such as Serenity on X, TrendForce, DIGITIMES, Nikkei xTECH, The Elec, OpenAI, NVIDIA, Samsung, SK hynix, Micron, Sina Finance, iFinD, and JYGS.
+- Watch high-signal sources such as Serenity on X, SEMI, TrendForce, DIGITIMES, Nikkei xTECH, The Elec, OpenAI, NVIDIA, Samsung, SK hynix, Micron, Sina Finance, iFinD, and JYGS.
 - Use an LLM to decide what deserves immediate attention and what can wait for a daily digest.
 - Keep credentials and personal research data on your own machine or server.
 

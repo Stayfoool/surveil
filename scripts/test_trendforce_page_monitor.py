@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from trendforce_page_monitor import extract_news_items, extract_research_items
+from trendforce_page_monitor import extract_news_items, extract_prnewswire_semi_items, extract_research_items
 from trendforce_sources import PageSource
 
 
@@ -84,6 +84,38 @@ def main() -> int:
         raise AssertionError(f"expected one news item, got {len(news_items)}")
     if "2026-06-17" not in news_items[0]["published_at"]:
         raise AssertionError("news date extraction failed")
+
+    semi_source = PageSource(
+        "semi_prnewswire_semiconductors",
+        "SEMI / PR Newswire / Semiconductors",
+        "https://www.prnewswire.com/news-releases/business-technology-latest-news/semiconductors-list/",
+        "prnewswire_semi",
+        "test",
+    )
+    semi_html = """
+    <div role="group" aria-label="News Release" class="card col-view">
+      <a class="newsreleaseconsolidatelink display-outline w-100"
+         href="/news-releases/semi-projects-300mm-memory-equipment-investment-to-surpass-50-billion-in-2026-302811354.html">
+        <div class="col-sm-8 col-lg-9 pull-left card">
+          <h3><small>08:00 ET</small><span>SEMI Projects 300mm Memory Equipment Investment to Surpass $50 Billion in 2026</span></h3>
+          <span><p class="remove-outline">SEMI today projected strong semiconductor equipment demand from AI and memory fabs.</p></span>
+        </div>
+      </a>
+    </div>
+    <div role="group" aria-label="News Release" class="card col-view">
+      <a class="newsreleaseconsolidatelink display-outline w-100"
+         href="/news-releases/random-sensor-company-launches-product-302811355.html">
+        <div><h3><span>Random Sensor Company Launches Product</span></h3><p>Not a SEMI release.</p></div>
+      </a>
+    </div>
+    """
+    semi_items = extract_prnewswire_semi_items(semi_source, semi_html)
+    if len(semi_items) != 1:
+        raise AssertionError(f"expected one SEMI item, got {len(semi_items)}")
+    if "300mm Memory Equipment" not in semi_items[0]["title"]:
+        raise AssertionError("SEMI PR Newswire title extraction failed")
+    if "PR Newswire" not in semi_items[0]["body_source"]:
+        raise AssertionError("SEMI body source should identify PR Newswire")
 
     print("trendforce page extraction checks passed")
     return 0
