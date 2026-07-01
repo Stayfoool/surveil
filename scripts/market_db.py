@@ -234,6 +234,32 @@ CREATE TABLE IF NOT EXISTS relation_suggestions (
     reviewed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS market_skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    skill_id TEXT NOT NULL UNIQUE,
+    skill_name TEXT NOT NULL,
+    source_name TEXT,
+    source_path TEXT,
+    kind TEXT NOT NULL DEFAULT 'relevance_map',
+    date TEXT,
+    topic TEXT,
+    themes_json TEXT,
+    trigger_text TEXT,
+    chain_text TEXT,
+    affected_text TEXT,
+    strength TEXT,
+    nature TEXT,
+    key_insight TEXT,
+    constraints_json TEXT,
+    hard_evidence_json TEXT,
+    staleness TEXT,
+    verified_outcome TEXT,
+    match_text TEXT,
+    raw_json TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_table TEXT NOT NULL,
@@ -420,6 +446,8 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_symbol ON stock_relations(symbol, enabled)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_relations_related ON stock_relations(related_symbol, enabled)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_relation_suggestions_status ON relation_suggestions(status, updated_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_skills_enabled ON market_skills(enabled, updated_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_market_skills_kind ON market_skills(kind, enabled)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal ON signal_reviews(signal_id, review_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_symbol ON signal_reviews(symbol, created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_signal_reviews_created ON signal_reviews(created_at)")

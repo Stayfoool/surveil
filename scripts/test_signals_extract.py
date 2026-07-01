@@ -11,6 +11,7 @@ from pathlib import Path
 
 from article_gate import ensure_article_reviews_table
 from market_db import init_db
+from market_skills import import_market_skills, match_market_skills
 from official_news_gate import ensure_official_news_table
 import signal_outcome_update
 from signal_outcome_update import compute_metrics, quote_rows_from_response, target_rows
@@ -534,6 +535,96 @@ def test_theme_context_expands_signal_targets() -> None:
         assert row == ("300179.SZ", "四方达", "related_stock", "thermal material theme")
 
 
+def test_market_skill_import_and_signal_enrichment() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "surveil.sqlite3"
+        skill_dir = Path(tmpdir) / "market_skill"
+        views_dir = skill_dir / "views"
+        views_dir.mkdir(parents=True)
+        (views_dir / "2026-05-22-Rubin架构的产业链传导.md").write_text(
+            """---
+date: 2026-05-22
+source: 马男聊投资 test
+topic: 英伟达Rubin架构对下游产业链的量价传导
+themes: [英伟达/算力, 产业链传导, 被动元件]
+type: 事件→产业链各环节的量价传导
+
+relevance_maps:
+  - trigger: 英伟达Rubin架构
+    chain: 单芯片性能到极限 → 英伟达暴力堆料 → 各下游组件量价齐升
+    affected: PCB、MLCC、ABF载板
+    strength: 强
+    nature: 产业链传导
+    verified_outcome: |
+      Rubin量产后需验证。
+
+key_insight: |
+  新架构发布的机会在卖铲子的下游。
+
+constraints:
+  - Rubin量产良率/进度决定配套需求兑现节奏
+
+hard_evidence:
+  - PCB +233%
+
+staleness: Rubin进度为2026-05时点
+---
+
+# Rubin架构的产业链传导
+""",
+            encoding="utf-8",
+        )
+        init_db(path).close()
+        counts = import_market_skills(db_path=path, skill_dir=skill_dir)
+        assert counts["files"] == 1
+        assert counts["imported"] == 1
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            matches = match_market_skills(conn, "英伟达发布 Rubin 架构，AI 服务器下游 PCB 与 MLCC 用量增加")
+            assert len(matches) == 1
+            assert matches[0]["affected_text"] == "PCB、MLCC、ABF载板"
+            ensure_article_reviews_table(conn)
+            conn.execute(
+                """
+                INSERT INTO article_reviews (
+                    source, item_id, url, title, source_module, published_at,
+                    importance, push_now, market_impact, incremental_classification,
+                    affected_targets_json, reason, daily_summary, confidence,
+                    gate_json, pushed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'high', 1, ?, '增量利好', '[]', ?, ?, '中', '{}', ?, ?)
+                """,
+                (
+                    "rss",
+                    "rubin-1",
+                    "https://example.com/rubin",
+                    "英伟达 Rubin 架构推动 AI 服务器堆料",
+                    "test",
+                    NOW,
+                    "Rubin 架构提升整机柜性能，下游 PCB 和 MLCC 需求增加。",
+                    "标题和正文命中 Rubin 产业链传导。",
+                    "Rubin 下游组件需求上升。",
+                    NOW,
+                    NOW,
+                ),
+            )
+            conn.commit()
+        extract_signals(db_path=path, days=10, dry_run=False)
+        with sqlite3.connect(path) as conn:
+            target = conn.execute(
+                """
+                SELECT name, target_role, relation_type, confidence
+                FROM signal_targets
+                WHERE target_role = 'skill_inferred'
+                """
+            ).fetchone()
+            evidence = conn.execute(
+                "SELECT evidence_type, text FROM signal_evidence WHERE evidence_type = 'market_skill'"
+            ).fetchone()
+        assert target == ("PCB、MLCC、ABF载板", "skill_inferred", "market_skill", "中高")
+        assert evidence is not None
+        assert "Rubin" in evidence[1]
+
+
 def test_signal_review_classification_and_insert() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "surveil.sqlite3"
@@ -600,6 +691,7 @@ def main() -> int:
     test_relation_import_expands_signal_targets()
     test_relation_json_roundtrip_and_suggestion_accept()
     test_theme_context_expands_signal_targets()
+    test_market_skill_import_and_signal_enrichment()
     test_signal_review_classification_and_insert()
     print("signal extraction/outcome tests OK")
     return 0
