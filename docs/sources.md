@@ -10,6 +10,7 @@ The catalog is public configuration and code. Credentials, cookies, paid-content
 | --- | --- |
 | Serenity on X | Useful for market-facing interpretation of AI infrastructure, photonics, memory, CPO, and global semiconductor equity narratives. It is not an official data source; treat it as a high-signal opinion stream that still needs verification. |
 | TrendForce | A widely cited research provider for memory, panels, foundry, components, AI servers, MLCC, and pricing/supply-demand trends. Its public headlines and summaries often flag important supply-chain direction before broader market discussion. |
+| SEMI | A primary industry association for semiconductor equipment, fabs, materials, and market statistics. Its equipment forecasts and market-data releases can directly reprice equipment and components expectations. |
 | DIGITIMES | Taiwan supply-chain coverage is especially relevant to TSMC, IC design, advanced packaging, servers, ODMs, PCBs, components, and AI hardware manufacturing. |
 | Nikkei xTECH | Japan is important in semiconductor equipment, materials, components, industrial automation, and automotive electronics. Nikkei xTECH helps surface Japan-side technology and supply-chain changes. |
 | The Elec | Korea is central to memory, HBM, OLED/display, batteries, equipment, and materials. The Elec can surface Samsung/SK hynix/LG-adjacent supply-chain signals. |
@@ -75,6 +76,16 @@ Public page monitors include:
 - Press Centre In-Depth Analyses
 
 Research Report and Selected Topics pages may contain member or paid content. Surveil only reads public list-page titles/summaries and does not bypass access controls.
+
+## SEMI
+
+SEMI is monitored as a first-tier semiconductor industry source, alongside TrendForce, DIGITIMES, Nikkei xTECH, and The Elec.
+
+| Source Key | Source | URL | Method |
+| --- | --- | --- | --- |
+| `semi_prnewswire_semiconductors` | SEMI releases on PR Newswire Semiconductors | `https://www.prnewswire.com/news-releases/business-technology-latest-news/semiconductors-list/` | Public list page filtered to SEMI releases |
+
+SEMI's own website may use Cloudflare or similar bot protection. MarketPulseWire does not bypass access controls. The default source therefore monitors SEMI's public releases as distributed through PR Newswire and routes them through the same LLM gate, skeptic, signal extraction, and Feishu delivery path as other major semiconductor media.
 
 ## Industry Media
 

@@ -90,12 +90,28 @@ def test_run_once_fetches_sources_independently() -> None:
         cfm.save_new_items_with_retry = original_save
 
 
+def test_yicai_morning_brief_is_mandatory_push() -> None:
+    item = {
+        "title": "<b>券商晨会观点速递  |</b> ①中信建投：半导体设备全球景气周期持续确认",
+        "summary": "",
+        "full_text": "",
+    }
+    assert cfm.is_mandatory_yicai_morning_brief("yicai_brief", item) is True
+    review = {"importance": "medium", "push_now": False, "reason": "普通观点汇总。"}
+    updated = cfm.force_mandatory_morning_review(review, item)
+    assert updated["importance"] == "high"
+    assert updated["push_now"] is True
+    assert updated["mandatory_push"] == "yicai_morning_brief"
+    assert "强制推送规则" in updated["reason"]
+
+
 def main() -> int:
     test_cls_sign_includes_empty_values_and_sorts_keys()
     test_parse_cls_time_accepts_seconds_and_milliseconds()
     test_parse_cls_time_keeps_timezone_aware_iso()
     test_cls_poll_interval_skips_recent_fetch()
     test_run_once_fetches_sources_independently()
+    test_yicai_morning_brief_is_mandatory_push()
     print("china_finance_media_monitor helper tests OK")
     return 0
 

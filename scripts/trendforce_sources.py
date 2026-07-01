@@ -37,6 +37,13 @@ DEFAULT_RSS_FEEDS = {
 
 TREND_FORCE_PAGE_SOURCES: tuple[PageSource, ...] = (
     PageSource(
+        "semi_prnewswire_semiconductors",
+        "SEMI / PR Newswire / Semiconductors",
+        "https://www.prnewswire.com/news-releases/business-technology-latest-news/semiconductors-list/",
+        "prnewswire_semi",
+        "SEMI 官网 press 页面可能受 Cloudflare 保护；当前通过 PR Newswire 半导体分类页读取 SEMI 官方发布稿标题/摘要，不绕过访问控制。",
+    ),
+    PageSource(
         "trendforce_research_latest",
         "TrendForce / Research Report / Latest",
         "https://www.trendforce.com/research",

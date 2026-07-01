@@ -117,6 +117,64 @@ def item_from_anchor(
     }
 
 
+def extract_prnewswire_semi_items(source: PageSource, html_text: str) -> list[dict]:
+    items: list[dict] = []
+    seen: set[str] = set()
+    pattern = re.compile(
+        r"<a\b(?=[^>]*class=[\"'][^\"']*newsreleaseconsolidatelink[^\"']*[\"'])(?=[^>]*href=[\"']([^\"']+)[\"'])[^>]*>(.*?)</a>",
+        re.I | re.S,
+    )
+    for match in pattern.finditer(html_text):
+        href = match.group(1)
+        anchor_html = match.group(2)
+        start = max(0, match.start() - 500)
+        end = min(len(html_text), match.end() + 2600)
+        context_html = html_text[start:end]
+        context_text = clean_text(context_html)
+        url = urllib.parse.urljoin(source.url, href)
+        title = first_match(
+            [
+                r"<h3[^>]*>.*?<span[^>]*>(.*?)</span>.*?</h3>",
+                r"<h3[^>]*>(.*?)</h3>",
+            ],
+            anchor_html,
+        ) or clean_text(anchor_html)
+        title = re.sub(r"^\d{2}:\d{2}\s+ET\s*", "", title).strip()
+        summary = first_match(
+            [
+                r"<p[^>]*class=[\"'][^\"']*remove-outline[^\"']*[\"'][^>]*>(.*?)</p>",
+                r"<p[^>]*>(.*?)</p>",
+            ],
+            anchor_html,
+        )
+        if not title or len(title) < 8:
+            continue
+        if not re.search(r"\bSEMI\b|/semi[-/]", f"{url} {title}", re.I):
+            continue
+        if not is_focus_item(title, summary, source.module, url):
+            continue
+        date_match = re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2},\s+20\d{2}\b", context_text, re.I)
+        item_id = article_id(url)
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        items.append(
+            {
+                "id": item_id,
+                "url": url,
+                "title": title,
+                "summary": summary,
+                "published_at": parse_page_date(date_match.group(0) if date_match else ""),
+                "source_module": source.module,
+                "source_display": source.module,
+                "access_note": source.access_note,
+                "body_source": "PR Newswire 半导体分类页摘要",
+                "page_source": source.name,
+            }
+        )
+    return items
+
+
 def extract_research_items(source: PageSource, html_text: str) -> list[dict]:
     items: list[dict] = []
     seen: set[str] = set()
@@ -217,13 +275,15 @@ def extract_press_analysis_items(source: PageSource, html_text: str) -> list[dic
 
 def extract_items(source: PageSource) -> list[dict]:
     html_text = fetch_html(source.url)
+    if source.kind == "prnewswire_semi":
+        return extract_prnewswire_semi_items(source, html_text)
     if source.kind in {"research", "selected_topics"}:
         return extract_research_items(source, html_text)
     if source.kind == "news":
         return extract_news_items(source, html_text)
     if source.kind == "press_analysis":
         return extract_press_analysis_items(source, html_text)
-    raise ValueError(f"未知 TrendForce 页面类型：{source.kind}")
+    raise ValueError(f"未知官方页面类型：{source.kind}")
 
 
 def ensure_page_seen_table(conn: sqlite3.Connection) -> None:
