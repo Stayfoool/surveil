@@ -52,6 +52,15 @@ def recovery_alert_enabled() -> bool:
     return os.getenv("SOURCE_HEALTH_ALERT_RECOVERY", "1").strip() != "0"
 
 
+def should_alert_recovery(failure_count: int, last_alerted_at: str | None) -> bool:
+    if not recovery_alert_enabled() or failure_count < alert_threshold():
+        return False
+    last_alert = parse_dt(last_alerted_at)
+    if not last_alert:
+        return False
+    return datetime.now(timezone.utc) - last_alert >= alert_cooldown()
+
+
 def parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -128,7 +137,7 @@ def record_source_success(conn: sqlite3.Connection, monitor: str, source: str) -
     now = utc_now()
     row = conn.execute(
         """
-        SELECT consecutive_failures, last_error
+        SELECT consecutive_failures, last_error, last_alerted_at
         FROM source_health
         WHERE monitor = ? AND source = ?
         """,
@@ -136,6 +145,7 @@ def record_source_success(conn: sqlite3.Connection, monitor: str, source: str) -
     ).fetchone()
     previous_failures = int(row[0]) if row else 0
     previous_error = str(row[1]) if row and row[1] else ""
+    last_alerted_at = str(row[2]) if row and row[2] else None
     conn.execute(
         """
         INSERT INTO source_health (
@@ -148,7 +158,7 @@ def record_source_success(conn: sqlite3.Connection, monitor: str, source: str) -
         """,
         (monitor, source, now, now),
     )
-    if previous_failures >= alert_threshold() and recovery_alert_enabled():
+    if should_alert_recovery(previous_failures, last_alerted_at):
         try:
             send_text(
                 "MarketPulseWire 监控源恢复",

@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 import rss_monitor
 from pipeline_health import record_pipeline_failure, record_pipeline_success
-from source_health import record_source_failure, record_source_success, should_alert_failure
+from source_backoff import backoff_state_after_failure, clear_backoff_state, should_skip_by_backoff
+from source_health import record_source_failure, record_source_success, should_alert_failure, should_alert_recovery
 
 
 @dataclass
@@ -132,6 +133,42 @@ def test_source_health_alert_threshold() -> None:
             os.environ["SOURCE_HEALTH_ALERT_FAILURES"] = original
 
 
+def test_source_health_recovery_respects_alert_cooldown() -> None:
+    original_threshold = os.environ.get("SOURCE_HEALTH_ALERT_FAILURES")
+    original_cooldown = os.environ.get("SOURCE_HEALTH_ALERT_COOLDOWN_MINUTES")
+    try:
+        os.environ["SOURCE_HEALTH_ALERT_FAILURES"] = "3"
+        os.environ["SOURCE_HEALTH_ALERT_COOLDOWN_MINUTES"] = "60"
+        assert should_alert_recovery(3, None) is False
+        assert should_alert_recovery(3, "2026-06-29T00:00:00+00:00") is True
+    finally:
+        if original_threshold is None:
+            os.environ.pop("SOURCE_HEALTH_ALERT_FAILURES", None)
+        else:
+            os.environ["SOURCE_HEALTH_ALERT_FAILURES"] = original_threshold
+        if original_cooldown is None:
+            os.environ.pop("SOURCE_HEALTH_ALERT_COOLDOWN_MINUTES", None)
+        else:
+            os.environ["SOURCE_HEALTH_ALERT_COOLDOWN_MINUTES"] = original_cooldown
+
+
+def test_source_backoff_state_roundtrip() -> None:
+    original = os.environ.get("SOURCE_BACKOFF_JIN10_SECONDS")
+    try:
+        os.environ["SOURCE_BACKOFF_JIN10_SECONDS"] = "600"
+        state = backoff_state_after_failure("jin10_rsshub_important", {}, now=rss_monitor.datetime.fromisoformat("2026-06-29T00:00:00+00:00"))
+        skip, until = should_skip_by_backoff(state, now=rss_monitor.datetime.fromisoformat("2026-06-29T00:05:00+00:00"))
+        assert skip is True
+        assert until == "2026-06-29T00:10:00+00:00"
+        cleared = clear_backoff_state(state)
+        assert "skip_until" not in cleared
+    finally:
+        if original is None:
+            os.environ.pop("SOURCE_BACKOFF_JIN10_SECONDS", None)
+        else:
+            os.environ["SOURCE_BACKOFF_JIN10_SECONDS"] = original
+
+
 def test_pipeline_health_helpers() -> None:
     import tempfile
     from pathlib import Path
@@ -170,6 +207,8 @@ def main() -> int:
     test_fetch_feed_uses_conditionals_and_skips_304()
     test_source_health_failure_and_recovery()
     test_source_health_alert_threshold()
+    test_source_health_recovery_respects_alert_cooldown()
+    test_source_backoff_state_roundtrip()
     test_pipeline_health_helpers()
     print("rss monitor fetch/state checks passed")
     return 0

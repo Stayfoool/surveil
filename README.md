@@ -276,6 +276,22 @@ LLM_SKEPTIC_THINKING_TYPE=enabled
 LLM_SKEPTIC_MAX_OUTPUT_TOKENS=1200
 ```
 
+### Source Health Noise
+
+Some public feeds throttle or temporarily fail. SemiAnalysis may return `429`, and public RSSHub routes such as Jin10 may return `503`. MarketPulseWire records these in `source_health`, backs off the noisy source, and only alerts after consecutive failures.
+
+Useful settings:
+
+```bash
+SOURCE_HEALTH_ALERT_FAILURES=3
+SOURCE_HEALTH_ALERT_COOLDOWN_MINUTES=60
+SOURCE_HEALTH_ALERT_RECOVERY=1
+SOURCE_BACKOFF_SEMIANALYSIS_SECONDS=1800
+SOURCE_BACKOFF_JIN10_SECONDS=600
+```
+
+Increasing the backoff values reduces Feishu noise and source pressure; lowering them improves freshness but may trigger more upstream rate limits.
+
 ## PR Automation
 
 This repository uses GitHub Actions and Dependabot for low-risk PR automation:

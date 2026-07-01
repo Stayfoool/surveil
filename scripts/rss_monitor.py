@@ -48,6 +48,7 @@ from official_news_gate import (
 from skeptic_evaluator import apply_skeptic_review
 from trendforce_sources import DEFAULT_RSS_FEEDS
 from x_check import load_env
+from source_backoff import backoff_state_after_failure, clear_backoff_state, should_skip_by_backoff
 from source_health import record_source_failure, record_source_success
 
 
@@ -462,22 +463,33 @@ def run_once(feeds: dict[str, str], notify_baseline: bool = False) -> int:
     max_workers = max(1, int(os.getenv("RSS_FETCH_MAX_WORKERS", "8") or "8"))
     fetched: dict[str, tuple[list[dict], dict, bool]] = {}
     with ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(feeds)))) as executor:
+        skipped_sources: set[str] = set()
         futures = {
             executor.submit(fetch_feed, source, url, feed_states.get(source, {})): source
             for source, url in feeds.items()
+            if not should_skip_by_backoff(feed_states.get(source, {}))[0]
         }
+        for source in feeds:
+            skip, until = should_skip_by_backoff(feed_states.get(source, {}))
+            if skip:
+                skipped_sources.add(source)
+                print(f"{source}: 源级退避中，跳过抓取直到 {until}。", flush=True)
         for future in as_completed(futures):
             source = futures[future]
             try:
-                fetched[source] = future.result()
+                items, next_state, not_modified = future.result()
+                fetched[source] = (items, clear_backoff_state(next_state), not_modified)
                 with connect_db() as conn:
                     record_source_success(conn, "rss_monitor", source)
             except Exception as exc:
                 with connect_db() as conn:
+                    save_source_state(conn, source, backoff_state_after_failure(source, feed_states.get(source, {})))
                     record_source_failure(conn, "rss_monitor", source, exc)
                 print(f"{source} 抓取失败：{exc}", flush=True)
 
     for source, _url in feeds.items():
+        if source in skipped_sources:
+            continue
         if source not in fetched:
             continue
         try:

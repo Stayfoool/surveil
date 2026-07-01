@@ -44,6 +44,7 @@ from http_utils import http_get
 from llm_analysis import llm_config
 from media_keyword_config import is_media_focus_item
 from rss_monitor import DB_PATH, fetch_article_body, parse_date, strip_tags
+from source_backoff import backoff_state_after_failure, clear_backoff_state, should_skip_by_backoff
 from source_health import record_source_failure, record_source_success
 from skeptic_evaluator import apply_skeptic_review
 from time_utils import parse_datetime_to_utc_iso, timestamp_to_utc_iso
@@ -514,15 +515,25 @@ def run_once(sources: list[str], notify_baseline: bool = False) -> int:
     total_new = 0
     fetched: dict[str, list[dict[str, Any]]] = {}
     max_workers = min(len(sources), env_int("CHINA_MEDIA_FETCH_MAX_WORKERS", 3, minimum=1))
+    source_states = {source: load_source_state(source) for source in sources}
+    runnable_sources: list[str] = []
+    for source in sources:
+        skip, until = should_skip_by_backoff(source_states.get(source, {}))
+        if skip:
+            print(f"{china_media_module(source)}：源级退避中，跳过抓取直到 {until}。", flush=True)
+            continue
+        runnable_sources.append(source)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(source_items, source): source for source in sources}
+        futures = {executor.submit(source_items, source): source for source in runnable_sources}
         for future in as_completed(futures):
             source = futures[future]
             try:
                 fetched[source] = future.result()
                 with connect_db() as conn:
                     record_source_success(conn, "china_finance_media", source)
+                save_source_state(source, clear_backoff_state(load_source_state(source)))
             except Exception as exc:
+                save_source_state(source, backoff_state_after_failure(source, load_source_state(source)))
                 with connect_db() as conn:
                     record_source_failure(conn, "china_finance_media", source, exc)
                 print(f"{china_media_module(source)} 抓取失败：{exc}", flush=True)
