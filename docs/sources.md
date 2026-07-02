@@ -16,6 +16,7 @@ The catalog is public configuration and code. Credentials, cookies, paid-content
 | The Elec | Korea is central to memory, HBM, OLED/display, batteries, equipment, and materials. The Elec can surface Samsung/SK hynix/LG-adjacent supply-chain signals. |
 | Official company feeds | First-party announcements from OpenAI, NVIDIA, Samsung Semiconductor, SK hynix, and Micron are primary sources for architecture, product, capex, platform, and supply-chain changes. |
 | Sina Finance / iFinD / JYGS | China-market channels for holdings-related news, official company notices, announcements, and A-share event/action monitoring. |
+| First Yicai / CLS / Star Market Daily / Jin10 | Domestic market-moving context for A-share risk appetite, hard-tech company updates, macro/Fed policy reaction, and China-side semiconductor/AI narratives. |
 
 ## X Accounts
 
@@ -113,6 +114,19 @@ These feeds are filtered by configurable media keywords before LLM gating. The d
 | iFinD notices | iFinD REST/API | `IFIND_REFRESH_TOKEN` or access token |
 
 iFinD is the preferred source for company notices/announcements. Sina news filters out announcement-like reposts where possible so iFinD remains the authoritative notice path.
+
+## Domestic Finance and Hard-Tech Media
+
+These sources are defined in `scripts/china_media_sources.py` and run through `scripts/china_finance_media_monitor.py`.
+
+| Source Key | Source | URL / Method | Notes |
+| --- | --- | --- | --- |
+| `yicai_brief` | First Yicai / brief news | `https://www.yicai.com/api/ajax/getbrieflist?type=0&page=1&pagesize=20` | Public JSON endpoint. The daily broker morning brief is treated as a mandatory user-requested push. |
+| `cls_telegraph_api` | CLS / telegraph | `https://api3.cls.cn/v1/roll/get_roll_list` | Public frontend endpoint with low-frequency polling. Star Market Daily items inside CLS telegraph are labeled as `科创板日报 / 财联社电报`. |
+| `star_market_daily_subject` | Star Market Daily / 科创板最新动态 | `https://www.cls.cn/subject/1777` | Public topic page. The monitor reads the page's public Next.js data for title, summary, stocks, subjects, timestamp, and article link. |
+| `jin10_rsshub_important` | Jin10 / important events | RSSHub route | Public RSSHub backup route for important events; it may be rate-limited or temporarily unavailable. |
+
+Star Market Daily is useful for China hard-tech and STAR Market signals, including semiconductors, AI, advanced manufacturing, materials, IPO/refinancing, and listed-company research notes. It is not pushed unconditionally: items still pass the media keyword/macro filters, LLM article gate, skeptic evaluator, and duplicate checks before immediate Feishu delivery.
 
 ## JYGS
 

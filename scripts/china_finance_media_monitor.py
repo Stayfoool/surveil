@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import os
@@ -58,6 +59,7 @@ ENV_PATH = ROOT / ".env"
 DOMESTIC_FEED_SOURCES = {
     "yicai_brief": CHINA_MEDIA_FEEDS["yicai_brief"],
     "cls_telegraph_api": CHINA_MEDIA_FEEDS["cls_telegraph_api"],
+    "star_market_daily_subject": CHINA_MEDIA_FEEDS["star_market_daily_subject"],
     "jin10_rsshub_important": CHINA_MEDIA_FEEDS["jin10_rsshub_important"],
 }
 
@@ -92,6 +94,11 @@ def title_similarity(a: str, b: str) -> bool:
     na = normalize_text(a)
     nb = normalize_text(b)
     return na == nb or na in nb or nb in na
+
+
+def is_star_market_daily_text(*values: Any) -> bool:
+    text = " ".join(str(value or "") for value in values)
+    return "科创板日报" in text or "科创板最新动态" in text
 
 
 def balanced_json_prefix(raw: str) -> str | None:
@@ -305,11 +312,15 @@ def parse_cls_items() -> list[dict[str, Any]]:
             continue
         title = str(row.get("content") or row.get("title") or "").strip()
         title = strip_tags(title)
+        author = str(row.get("author") or row.get("source") or row.get("media") or "").strip()
         url = str(row.get("shareurl") or row.get("shareUrl") or row.get("url") or "").strip()
         if not title:
             continue
         ctime = row.get("ctime") or row.get("time") or row.get("published_at") or ""
         item_id = str(row.get("id") or row.get("telegraphId") or row.get("ctime") or url or title)
+        source_module = CHINA_MEDIA_LABELS["cls_telegraph_api"]
+        if is_star_market_daily_text(title, author):
+            source_module = "科创板日报 / 财联社电报"
         items.append(
             {
                 "id": item_id,
@@ -318,9 +329,107 @@ def parse_cls_items() -> list[dict[str, Any]]:
                 "summary": title,
                 "content": "",
                 "published_at": parse_cls_time(ctime),
-                "source_module": CHINA_MEDIA_LABELS["cls_telegraph_api"],
+                "source_module": source_module,
                 "access_note": CHINA_MEDIA_ACCESS_NOTES["cls_telegraph_api"],
                 "body_source": "公开前端 API",
+            }
+        )
+    return items
+
+
+def next_data_from_html(html_text: str) -> dict[str, Any]:
+    match = re.search(r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html_text, flags=re.S)
+    if not match:
+        raise RuntimeError("科创板日报专题页未找到 __NEXT_DATA__")
+    raw = html.unescape(match.group(1))
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("科创板日报专题页 __NEXT_DATA__ 不是 JSON object")
+    return parsed
+
+
+def article_url_from_row(row: dict[str, Any]) -> str:
+    for key in ("share_url", "shareUrl", "jump_url", "externalLink", "url", "link"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    article_id = str(row.get("article_id") or row.get("id") or "").strip()
+    if article_id:
+        return f"https://api3.cls.cn/share/article/{article_id}?os=web&sv=7.7.5&app=CailianpressWeb"
+    return ""
+
+
+def star_market_context(row: dict[str, Any]) -> str:
+    stocks = row.get("stock_list") or []
+    stock_names: list[str] = []
+    if isinstance(stocks, list):
+        for stock in stocks:
+            if isinstance(stock, dict) and stock.get("name"):
+                stock_names.append(str(stock.get("name")))
+    subjects = row.get("subjects") or []
+    subject_names: list[str] = []
+    if isinstance(subjects, list):
+        for subject in subjects:
+            if isinstance(subject, dict) and subject.get("subject_name"):
+                subject_names.append(str(subject.get("subject_name")))
+    tags = row.get("article_tags") or []
+    tag_names: list[str] = []
+    if isinstance(tags, list):
+        for tag in tags:
+            if isinstance(tag, dict) and tag.get("name"):
+                tag_names.append(str(tag.get("name")))
+    parts = []
+    if stock_names:
+        parts.append("涉及标的：" + "、".join(stock_names[:8]))
+    if subject_names:
+        parts.append("专题：" + "、".join(subject_names[:8]))
+    if tag_names:
+        parts.append("标签：" + "、".join(tag_names[:8]))
+    return "；".join(parts)
+
+
+def parse_star_market_daily_subject_items() -> list[dict[str, Any]]:
+    source = "star_market_daily_subject"
+    response = http_get(
+        DOMESTIC_FEED_SOURCES[source],
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        timeout=int(os.getenv("CHINA_MEDIA_FETCH_TIMEOUT_SECONDS", "20")),
+    )
+    data = next_data_from_html(response.content.decode("utf-8", errors="replace"))
+    props = data.get("props") if isinstance(data, dict) else {}
+    page_props = props.get("pageProps", {}) if isinstance(props, dict) else {}
+    payload = page_props.get("data", {}) if isinstance(page_props, dict) else {}
+    rows = payload.get("articles") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        raise RuntimeError("科创板日报专题页 articles 格式异常")
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = strip_tags(str(row.get("article_title") or row.get("title") or "").strip())
+        if not title:
+            continue
+        brief = strip_tags(str(row.get("article_brief") or row.get("article_guide_text") or "").strip())
+        author = str(row.get("article_author") or "").strip()
+        context = star_market_context(row)
+        summary = "\n".join(part for part in (brief, context, author) if part)
+        article_id = str(row.get("article_id") or row.get("id") or title).strip()
+        url = canonical_url(article_url_from_row(row))
+        published_at = parse_cls_time(row.get("article_time") or row.get("ctime") or "")
+        items.append(
+            {
+                "id": article_id,
+                "url": url,
+                "title": title,
+                "summary": summary or title,
+                "content": "",
+                "published_at": published_at,
+                "source_module": CHINA_MEDIA_LABELS[source],
+                "access_note": CHINA_MEDIA_ACCESS_NOTES[source],
+                "body_source": "公开专题页 JSON",
             }
         )
     return items
@@ -367,6 +476,8 @@ def source_items(source: str) -> list[dict[str, Any]]:
         return parse_first_finance_items()
     if source == "cls_telegraph_api":
         return parse_cls_items()
+    if source == "star_market_daily_subject":
+        return parse_star_market_daily_subject_items()
     if source == "jin10_rsshub_important":
         return parse_jin10_items()
     return []
@@ -381,7 +492,7 @@ def enrich_item(source: str, item: dict[str, Any]) -> dict[str, Any]:
             body, body_source = fetch_article_body(enriched["url"])
         except Exception as exc:
             print(f"第一财经正文抓取失败，回退摘要：{exc}", flush=True)
-    if source in {"cls_telegraph_api", "jin10_rsshub_important"} and enriched.get("url"):
+    if source in {"cls_telegraph_api", "star_market_daily_subject", "jin10_rsshub_important"} and enriched.get("url"):
         try:
             body, body_source = fetch_article_body(enriched["url"])
         except Exception:
@@ -415,6 +526,7 @@ def save_new_items(
     now = datetime.now(timezone.utc).isoformat()
     new_items: list[dict[str, Any]] = []
     seen_titles: list[str] = []
+    star_market_sources = {"cls_telegraph_api", "star_market_daily_subject"}
     for item in sorted(items_list, key=lambda row: row.get("published_at") or "", reverse=False):
         title = str(item.get("title") or "").strip()
         url = canonical_url(str(item.get("url") or "").strip())
@@ -423,6 +535,32 @@ def save_new_items(
             continue
         if any(title_similarity(title, prior) for prior in seen_titles):
             continue
+        if source in star_market_sources and is_star_market_daily_text(
+            title,
+            item.get("summary"),
+            item.get("source_module"),
+        ):
+            duplicate = conn.execute(
+                """
+                SELECT source, title FROM seen_items
+                WHERE source IN ('cls_telegraph_api', 'star_market_daily_subject')
+                  AND ((? != '' AND url = ?) OR title = ?)
+                LIMIT 1
+                """,
+                (url, url, title),
+            ).fetchone()
+            if duplicate:
+                continue
+            recent_rows = conn.execute(
+                """
+                SELECT title FROM seen_items
+                WHERE source IN ('cls_telegraph_api', 'star_market_daily_subject')
+                ORDER BY first_seen_at DESC
+                LIMIT 80
+                """
+            ).fetchall()
+            if any(title_similarity(title, str(row[0] or "")) for row in recent_rows):
+                continue
         seen_titles.append(title)
         try:
             conn.execute(
@@ -592,7 +730,7 @@ def run_once(sources: list[str], notify_baseline: bool = False) -> int:
 
 def parse_sources_arg(raw: list[str]) -> list[str]:
     if not raw:
-        return ["yicai_brief", "cls_telegraph_api", "jin10_rsshub_important"]
+        return ["yicai_brief", "cls_telegraph_api", "star_market_daily_subject", "jin10_rsshub_important"]
     sources = []
     for part in raw:
         for name in part.split(","):

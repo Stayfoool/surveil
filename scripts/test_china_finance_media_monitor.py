@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
 
 import china_finance_media_monitor as cfm
-from china_finance_media_monitor import cls_sign, parse_cls_time
+from china_finance_media_monitor import cls_sign, next_data_from_html, parse_cls_time
 
 
 def test_cls_sign_includes_empty_values_and_sorts_keys() -> None:
@@ -105,6 +106,78 @@ def test_yicai_morning_brief_is_mandatory_push() -> None:
     assert "强制推送规则" in updated["reason"]
 
 
+def test_star_market_daily_next_data_parser() -> None:
+    payload = {
+        "props": {
+            "pageProps": {
+                "data": {
+                    "articles": [
+                        {
+                            "article_id": 2414199,
+                            "article_title": "【炬光科技：现阶段并不认为康宁Glass Bridge方案会对公司的CPO业务产生实质性的负面影响】",
+                            "article_brief": "《科创板日报》1日讯，炬光科技发布投资者关系活动记录表公告。",
+                            "article_author": "科创板日报记者",
+                            "article_time": 1782900000,
+                            "share_url": "https://api3.cls.cn/share/article/2414199?os=web&sv=7.7.5&app=CailianpressWeb",
+                            "stock_list": [{"name": "炬光科技", "StockID": "sh688167"}],
+                            "subjects": [{"subject_name": "科创板最新动态"}],
+                            "article_tags": [{"name": "原创"}],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    html = f'<html><script id="__NEXT_DATA__" type="application/json">{json.dumps(payload, ensure_ascii=False)}</script></html>'
+    parsed = next_data_from_html(html)
+    assert parsed["props"]["pageProps"]["data"]["articles"][0]["article_id"] == 2414199
+
+    original_http_get = cfm.http_get
+    try:
+        class Response:
+            content = html.encode("utf-8")
+
+        cfm.http_get = lambda *args, **kwargs: Response()
+        items = cfm.parse_star_market_daily_subject_items()
+        assert len(items) == 1
+        assert items[0]["source_module"] == "科创板日报 / 科创板最新动态"
+        assert "炬光科技" in items[0]["summary"]
+        assert items[0]["published_at"] == "2026-07-01T10:00:00+00:00"
+    finally:
+        cfm.http_get = original_http_get
+
+
+def test_star_market_daily_cross_source_dedup() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        original_db = cfm.DB_PATH
+        try:
+            cfm.DB_PATH = Path(tmpdir) / "test.sqlite3"
+            first = {
+                "id": "cls-1",
+                "url": "https://api3.cls.cn/share/article/1?os=web",
+                "title": "《科创板日报》讯 AI芯片公司订单大增",
+                "summary": "《科创板日报》讯 AI芯片公司订单大增",
+                "published_at": "2026-07-01T00:00:00+00:00",
+                "source_module": "科创板日报 / 财联社电报",
+            }
+            second = {
+                "id": "subject-1",
+                "url": "https://api3.cls.cn/share/article/1?os=web",
+                "title": "《科创板日报》讯 AI芯片公司订单大增",
+                "summary": "科创板日报专题页",
+                "published_at": "2026-07-01T00:01:00+00:00",
+                "source_module": "科创板日报 / 科创板最新动态",
+            }
+            assert len(cfm.save_new_items_with_retry("cls_telegraph_api", [first], notify_baseline=True)) == 1
+            assert len(cfm.save_new_items_with_retry("star_market_daily_subject", [second], notify_baseline=True)) == 0
+        finally:
+            cfm.DB_PATH = original_db
+
+
+def test_default_sources_include_star_market_daily() -> None:
+    assert "star_market_daily_subject" in cfm.parse_sources_arg([])
+
+
 def main() -> int:
     test_cls_sign_includes_empty_values_and_sorts_keys()
     test_parse_cls_time_accepts_seconds_and_milliseconds()
@@ -112,6 +185,9 @@ def main() -> int:
     test_cls_poll_interval_skips_recent_fetch()
     test_run_once_fetches_sources_independently()
     test_yicai_morning_brief_is_mandatory_push()
+    test_star_market_daily_next_data_parser()
+    test_star_market_daily_cross_source_dedup()
+    test_default_sources_include_star_market_daily()
     print("china_finance_media_monitor helper tests OK")
     return 0
 
